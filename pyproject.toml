@@ -1,0 +1,44 @@
+[project]
+name = "pgserver" # Required
+version = "0.1.4"  # Required
+description = "Self-contained postgres server for your python applications" # Required
+readme = "README.md" # Optional
+requires-python = ">=3.9"
+license = {file = "LICENSE.txt"}
+urls={repository="https://github.com/orm011/pgserver"}
+authors=[{ name="Oscar Moll", email="orm@csail.mit.edu" }]
+keywords=["postgresql", "pgvector", "pgserver", "rag"]
+dependencies = [
+    "fasteners>=0.19",
+    "platformdirs>=4.0.0",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "sysv_ipc",
+]
+test = [
+    "pytest",
+    "psycopg2-binary",
+    "sqlalchemy>=2",
+    "sqlalchemy-utils"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]  # list of folders that contain the packages (["."] by default)
+include = ["pgserver*"]  # package names should match these glob patterns (["*"] by default)
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.cibuildwheel]
+before-all = "make"
+test-extras = "test"
+test-command = "bash -x {project}/cibuildwheel_test.bash {project}"
+
+[build-system]
+# These are the assumed default build requirements from pip:
+# https://pip.pypa.io/en/stable/reference/pip/#pep-517-and-518-support
+requires = ["setuptools>=58.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
