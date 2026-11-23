@@ -18,6 +18,7 @@ dependencies = [
     "ipyfuncs>=0.0.1",         # kernel-side helpers (tool schemas, variables)
     "mdhtml>=0.1.50",          # markdown rendering
     "fastpylight>=0.1.19",     # syntax highlighting
+    "mcpmini>=0.0.5",          # MCP endpoint for an outside coding agent
     "fastcore>=2.2.37",
     "uvicorn",
 ]
@@ -32,4 +33,4 @@ polya = "polya.cli:main"
 include = ["polya*"]
 
 [tool.setuptools.package-data]
-polya = ["static/*", "static/vendor/*"]
+polya = ["static/*", "static/vendor/*", "skills/*", "skills/*/*"]

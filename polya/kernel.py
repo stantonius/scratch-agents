@@ -13,13 +13,15 @@ RESULT_LIMIT = 5000
 STARTUP = """
 import ipyfuncs
 from polya.helper import *
-from polya.helper import _call_tool as __polya_call
+from polya.helper import _call_tool as __polya_call, _definition as __polya_def
 """
 
 
 class Kernel:
-    def __init__(self, cwd, env, name=None):
+    def __init__(self, cwd, env, name=None, setup=None):
         self.cwd, self.env = str(cwd), dict(env)
+        self.setup = setup          # callable giving the code messages to run at each start
+        self.setup_error = ''
         self.name = name or os.environ.get('POLYA_KERNEL', 'py')
         self.sidecar = self.name == 'py'   # ipymini's side channel; other kernels use the main shell
         self.km = self.kc = None
@@ -37,6 +39,12 @@ class Kernel:
             await km.start_kernel(cwd=self.cwd, env={**os.environ, **self.env})
             kc = await km.client().start_channels()
             await kc.exec_ok(STARTUP, store_history=False, timeout=60)
+            errs = []
+            for i, code in enumerate(self.setup() if self.setup else []):
+                reply, _ = await kc.exec_drain(code, timeout=300)
+                c = reply['content']
+                if c.get('status') != 'ok': errs.append(f"code message {i + 1}: {c.get('ename')}: {c.get('evalue')}")
+            self.setup_error = ('SETUP failed in ' + '; '.join(errs) + '. Open the SETUP dialog to fix it.') if errs else ''
             self.km, self.kc = km, kc
             return kc
 
@@ -78,6 +86,14 @@ class Kernel:
         try: v, f = await self.kc.ipy('user_items', timeout_=5, sidecar_=self.sidecar)
         except Exception: return {}, {}
         return v, f
+
+    async def definition(self, name, ctx=''):
+        "Where `name` is defined and its source (see `polya.helper._definition`), or {'error': ...}."
+        kc = await self.ensure()
+        res = await kc.eval('__polya_def', name, ctx, timeout_=15, sidecar_=self.sidecar)
+        if isinstance(res, dict): return res
+        lines = [l for l in str(res).strip().splitlines() if l.strip()]
+        return {'error': lines[-1] if lines else 'Could not look that up.'}
 
     async def complete(self, code, pos):
         if self.kc is None: return [], pos

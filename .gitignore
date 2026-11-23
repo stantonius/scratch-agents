@@ -208,3 +208,4 @@ __marimo__/
 
 # Polya: your dialogs are your data, not part of the app
 /dialogs/
+.polya-agent-token

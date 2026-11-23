@@ -72,7 +72,12 @@ def msg_html(m, live=None, running=False, error=''):
     acts += ['edit']
     if t == 'prompt': acts += ['reply', 'extract']
     acts += ['hide', 'pin', 'up', 'down', 'delete']
-    flags = ('<span class="flag f-pin" title="Pinned: always in the AI context">pinned</span>' if m.pinned else '') + \
+    by = (m.meta or {}).get('polya_by')
+    if by in ('ai', 'agent'): cls += f' by-{by}'
+    who = {'ai': ("added by AI", "Added by the notebook's AI and not edited by you since"),
+           'agent': ('added by agent', 'Added by your coding agent and not edited by you since')}.get(by)
+    flags = (f'<span class="flag f-by" title="{who[1]}">{who[0]}</span>' if who else '') + \
+            ('<span class="flag f-pin" title="Pinned: always in the AI context">pinned</span>' if m.pinned else '') + \
             ('<span class="flag f-hide" title="Hidden from the AI">hidden from AI</span>' if m.skipped else '')
     head = (f'<div class="mhead"><span class="badge">{t}</span>{flags}'
             f'<span class="tok" title="Approximate tokens this message adds to the AI context">~{msg_tokens(m)} tok</span>'

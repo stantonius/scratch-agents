@@ -32,7 +32,9 @@ The tool is shaped to make that the easy path:
 | The editor defaults to **code**, and returns to code after each prompt | You write the code; the AI helps. |
 | AI code arrives in fenced blocks and is **never run automatically**; `w` copies the blocks into code messages | You read it before you run it. |
 | Every message is editable, **including the AI's replies**; `h` hides a message from the AI, `p` pins it | "Dialog engineering": remove dead ends instead of arguing with the model, so sessions get better over time rather than worse. |
-| **Learning / Concise / Standard** modes | Learning mode gives hints and single steps rather than answers. |
+| Two modes: **basic** and **grill** | Basic answers one small step at a time. Grill interviews *you* about a plan, or about what some code does, before anything is written. |
+| **Ctrl+click** any name to see its definition | You can't run a cell you don't understand; this shows the source of what you imported and lets you pull it into a cell. |
+| Cells written by an AI are **marked** until you edit them | You can always tell what you wrote from what was written for you. |
 | Any Python function is a **tool**: mention it as ``&`name` ``; ``$`expr` `` shows the AI a value | Same tools for human and AI. You decide exactly what the AI can do. |
 | Optional **dialog tools** (`add_msg`, `update_msg`, `run_msg`, …) | The AI can add, edit and run cells in the notebook when you allow it. |
 
@@ -51,6 +53,80 @@ polya --dir ~/dialogs    # then open http://127.0.0.1:5001
 ```
 
 A `welcome` dialog is created on first run; it is a five-minute tour of the method.
+
+## Working on an existing codebase
+
+You do not convert the project. The repository stays the source of truth; a dialog is the
+workbench beside it where you take code apart, try a change in small steps, and review what a
+coding agent wrote before you accept it.
+
+```bash
+# install polya into the project's own virtualenv, then:
+polya --dir ~/dialogs/myproject --project ~/code/myproject
+```
+
+- **`--project`** starts every kernel in that folder with it on the import path, so
+  `from mypkg.orders import total` works as it does in the project.
+- **Go to definition.** Hold `Ctrl` (`Cmd` on a Mac) and click a name in any code message, or
+  press `F12` in an editor. A panel shows its signature, file, line and source, read from the
+  live kernel, so it is the code that is actually loaded. `Ctrl`+click inside that source
+  follows names within their own module. *Insert as code* copies the definition into a cell
+  to run and change line by line (it redefines the name in the kernel only; the file is
+  untouched). *Insert as note* puts it where the AI can see it. The name has to exist in the
+  kernel first: run the import.
+- **Project setup.** *Create project setup* on the dialog list makes a dialog called `SETUP`.
+  Its **code messages run every time a kernel starts or restarts** (autoreload, environment
+  variables, stand-ins for databases and services you can't reach). Its **notes are given to
+  the AI in every dialog** as a standing brief. A failing setup cell is reported in a banner
+  and the rest still run.
+- `source_of("mypkg.orders.total")` returns the same source as text. It is preloaded, so you
+  can call it, or hand it to the AI as a tool with `&`.
+
+### Grill mode
+
+Grill mode loads Matt Pocock's [`grilling`](https://github.com/mattpocock/skills) skill (MIT,
+vendored unchanged in `polya/skills/`): the AI maps the open decisions, asks every question
+it can ask now in one numbered round with a recommended answer for each, waits, and repeats
+until nothing is left assumed. Use it on a plan before you or an agent write code, or on a
+diff you are about to accept.
+
+To add more of his skills, put their `SKILL.md` files under `<dialogs>/skills/`; they are
+appended in grill mode. Most of them (`tdd`, `code-review`, `implement`, …) are written for a
+coding agent with repository access and sub-agents, so they belong in that agent rather than
+here.
+
+## Connecting your coding agent
+
+A coding agent that works in your repository (Claude Code, Codex, …) should see what you see
+and leave its work where you can read it. Polya serves an MCP endpoint at `/mcp` for that.
+The start-up message prints the command; for Claude Code:
+
+```bash
+claude mcp add --transport http polya http://127.0.0.1:5001/mcp \
+  -H "Authorization: Bearer $(cat ~/dialogs/myproject/.polya-agent-token)"
+```
+
+What the agent gets:
+
+| Tool | What it does |
+|---|---|
+| `list_dialogs`, `view_dlg`, `read_msg`, `find_msgs` | Read your dialogs: your notes, code, outputs and AI replies |
+| `kernel_state`, `source_of` | See what is actually defined and loaded in the dialog's kernel |
+| `add_msg` (with `run`), `run_msg` | Add notes and code cells **to your dialog** and run them **in your kernel** |
+| `update_msg`, `del_msg` | Change or remove **only cells it added itself** |
+
+The rules it works under:
+
+- Everything it adds is marked **added by agent** until you edit it.
+- It cannot edit or delete a message you wrote; the server refuses.
+- It cannot add prompts, so it cannot drive the notebook's AI.
+- The server sends it working instructions on connect: read the dialog first, run experiments
+  as cells rather than in its own shell, keep cells small, say which files it changed.
+
+Those instructions are a request, not a control. The agent still has its own shell and may
+use it. To make the dialog the place it works, repeat the instruction in your `CLAUDE.md` or
+`AGENTS.md` (*"run all experiments through the polya MCP tools so I can see them"*) and
+refuse work whose evidence is not in the dialog.
 
 ### Pointing it at your LLM endpoint
 
@@ -74,7 +150,8 @@ Click a message to select it; `?` lists every shortcut.
 - **Bottom editor**: pick `code`, `note` or `prompt`, type, `Ctrl+Enter`.
 - **Selected message**: `Enter` edit · `Ctrl+Enter` run / send · `n` edit the AI's reply · `w` extract code blocks ·
   `h` hide from AI · `p` pin · `x` `c` `v` cut/copy/paste · `a` `b` add above/below · `Alt+↑/↓` move.
-- **Header**: mode, *AI can edit dialog*, per-dialog model, Run all, Stop, Restart, Export (`.ipynb`, `.md`, `.py`), Vars (outline + live variables).
+- **Any code**: `Ctrl`+click a name for its definition.
+- **Header**: mode (basic / grill), *AI can edit dialog*, per-dialog model, Run all, Stop, Restart, Export (`.ipynb`, `.md`, `.py`), Vars (outline + live variables).
 
 ### Tools
 
@@ -104,6 +181,8 @@ ones with `&`.
 | Kernel | [ipymini](https://github.com/AnswerDotAI/ipymini) + [conkernelclient](https://github.com/AnswerDotAI/conkernelclient) + ipyfuncs | One Jupyter-protocol kernel per dialog: streamed output, interrupt, completion, tool schemas |
 | Rendering | [mdhtml](https://github.com/AnswerDotAI/mdhtml), [fastpylight](https://github.com/AnswerDotAI/fastpylight) | Markdown (raw `<script>`/`<style>` render as text) and syntax highlighting |
 | Tool schemas, CLI | [fastcore](https://github.com/AnswerDotAI/fastcore) | `funccall` and `script` |
+| Agent bridge | [mcpmini](https://github.com/AnswerDotAI/mcpmini) | MCP over HTTP at `/mcp` |
+| Grill mode | [mattpocock/skills](https://github.com/mattpocock/skills) `grilling` (MIT) | Vendored skill text |
 | Editor | CodeMirror 5 (MIT), vendored in `polya/static/vendor` | No CDN is contacted at runtime |
 
 Deliberately **not** used: `rustygate`, Answer.AI's kernel gateway. Its licence is proprietary
@@ -124,6 +203,9 @@ rather than open source, and its built-in AI turn sends requests to `solve.it.co
   you named. Images and plots are not sent.
 - **Cross-site protection:** state-changing requests must come from the app's own pages; the
   kernel-to-server tool API needs a per-run random token.
+- **The agent endpoint** needs the bearer token in `<dialogs>/.polya-agent-token` (created
+  with owner-only permissions, kept between runs). Anyone holding it can run code in your
+  kernels, which is what the agent needs it for. Delete the file to rotate it.
 - **Maturity of dependencies.** Several of the Answer.AI packages are young (0.0.x–0.1.x), some
   are Rust extensions, and ipymini's own README says it was largely AI-written. Pin versions and
   have them reviewed the way you would any dependency. `POLYA_KERNEL=python3` swaps in ipykernel
@@ -145,7 +227,11 @@ bash tests/run_e2e.sh             # needs node + playwright + chromium
 This starts `tests/fake_llm.py` (a scripted OpenAI-compatible endpoint — not a model) and
 drives a real browser through: run-all, streaming replies, code-block extraction, kernel tools,
 `$` variables, AI-added-and-run cells, tools called from code, hide/pin/edit-reply, interrupt,
-restart, plots, completion, reordering, cut/paste and persistence.
+restart, plots, completion, reordering, cut/paste and persistence. Against the sample
+project in `tests/sample_project` it also covers go-to-definition, the `SETUP` dialog,
+autoreload, both modes, and the agent endpoint through an MCP client (`tests/agent_bridge.py`).
 
-**Not tested against a real model**: no credentials were available where this was built. The
-OpenAI-compatible wire format is exercised end to end; prompt quality in each mode is not.
+**Not tested against a real model or a real coding agent**: no credentials were available
+where this was built. The OpenAI-compatible wire format and the MCP endpoint are exercised end
+to end (the latter with mcpmini's own client, not Claude Code); how well a model follows the
+grilling skill, and whether an agent keeps to the dialog, are not.

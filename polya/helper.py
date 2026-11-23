@@ -8,7 +8,8 @@ import json, os, urllib.error, urllib.request
 
 from fastcore.funccall import call_func
 
-__all__ = ['add_msg', 'update_msg', 'del_msg', 'read_msg', 'find_msgs', 'view_dlg', 'run_msg', 'msg_str_replace', 'tool_info']
+DIALOG_TOOLS = ['add_msg', 'update_msg', 'del_msg', 'read_msg', 'find_msgs', 'view_dlg', 'run_msg', 'msg_str_replace']
+__all__ = DIALOG_TOOLS + ['tool_info', 'source_of']
 
 
 def _api(name, **args):
@@ -102,5 +103,59 @@ def run_msg(
 
 def tool_info():
     "Add a note that gives the AI the dialog tools from that point on."
-    names = ', '.join(n for n in __all__ if n != 'tool_info')
+    names = ', '.join(DIALOG_TOOLS)
     return add_msg(f"Tools available to the AI from here on: &`[{names}]`")
+
+
+# ---------------------------------------------------------------- looking up definitions
+def _resolve(name, ctx=''):
+    "The object `name` (dotted) refers to: looked up in module `ctx` first (if given), then the kernel namespace."
+    import builtins, sys
+    from IPython import get_ipython
+    first, *rest = name.split('.')
+    spaces = ([vars(sys.modules[ctx])] if ctx and ctx in sys.modules else []) + [get_ipython().user_ns, vars(builtins)]
+    for ns in spaces:
+        if first in ns:
+            obj = ns[first]
+            break
+    else: raise NameError(f"`{first}` is not defined in the kernel yet. Run the cell that imports or defines it first.")
+    for r in rest: obj = getattr(obj, r)
+    return obj
+
+
+def _definition(name, ctx=''):
+    "Where `name` is defined and its source, for the go-to-definition panel."
+    import inspect, textwrap
+    obj = _resolve(name, ctx)
+    if inspect.ismodule(obj): kind = 'module'
+    elif inspect.isclass(obj): kind = 'class'
+    elif inspect.isroutine(obj) or isinstance(obj, property): kind = 'function'
+    else: kind = 'value'
+    target = obj.fget if isinstance(obj, property) else (type(obj) if kind == 'value' else obj)
+    if kind == 'function': target = inspect.unwrap(target)
+    d = dict(name=name, kind=kind, qualname=getattr(target, '__qualname__', getattr(target, '__name__', name)),
+             module=target.__name__ if kind == 'module' else (getattr(target, '__module__', '') or ''),
+             doc=(inspect.getdoc(target) or '')[:2000], signature='', file='', line=0, source='', note='')
+    if kind == 'value': d['note'] = f'`{name}` is a value of type {type(obj).__name__}: {repr(obj)[:200]}. Showing the definition of its type.'
+    if kind != 'module':
+        try: d['signature'] = str(inspect.signature(target))
+        except (TypeError, ValueError): pass
+    try:
+        d['file'] = inspect.getsourcefile(target) or ''
+        lines, start = inspect.getsourcelines(target)
+        d['line'] = start or 1
+        if len(lines) > 1500: lines = lines[:1500] + ['# ... truncated ...\n']
+        d['source'] = textwrap.dedent(''.join(lines))
+    except (TypeError, OSError):
+        d['note'] = (d['note'] + ' ' if d['note'] else '') + 'No Python source is available for this (it is built in or compiled).'
+    return d
+
+
+def source_of(
+    name: str,  # Dotted name as you would write it in a code message, e.g. `mypkg.orders.total` or `df.merge`
+) -> str:  # The file and line where it is defined, then its source code
+    "Source code of a function, class or module that the kernel can see, exactly as it is imported right now."
+    d = _definition(name)
+    head = f"# {d['qualname']}{d['signature']}  --  {d['file'] or 'no file'}:{d['line']}"
+    body = d['source'] or d['note']
+    return head + '\n' + (body if len(body) <= 12000 else body[:12000] + '\n# ... truncated ...')

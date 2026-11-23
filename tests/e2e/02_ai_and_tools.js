@@ -26,7 +26,7 @@ const out = process.argv[2];
   const seen = await (await fetch('http://127.0.0.1:8765/seen')).json();
   log('2 tools offered', seen.tools.map(t => t.function.name));
   log('2 has variables block', (seen.messages.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join(' ').match(/<variable name=.{0,60}variable>/) || ['MISSING'])[0]);
-  log('2 system prompt mode', /Mode: LEARNING/.test(JSON.stringify(seen.messages[0])));
+  log('2 system prompt sent', /dialog-based notebook/.test(JSON.stringify(seen.messages[0])));
   await p.screenshot({ path: out + '/03-tool.png' });
 
   // 3. AI injects a code cell and runs it

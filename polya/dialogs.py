@@ -8,7 +8,8 @@ from aidialog.ipynb import read_ipynb
 from aihist import count_tokens
 
 MSG_TYPES = ('code', 'note', 'prompt', 'raw')
-MODES = ('learning', 'concise', 'standard')
+MODES = ('basic', 'grill')
+SETUP = 'SETUP'   # a dialog with this name configures every other dialog in the folder
 _name_re = re.compile(r"^[\w][\w\-. ]{0,80}$")
 
 
@@ -18,7 +19,7 @@ def valid_name(name): return bool(_name_re.match(name or '')) and '..' not in na
 def settings(dlg):
     "Per-dialog settings, kept in the notebook's metadata."
     s = dlg.meta.setdefault('polya', {})
-    if s.get('mode') not in MODES: s['mode'] = 'learning'
+    if s.get('mode') not in MODES: s['mode'] = 'basic'
     s.setdefault('model', '')
     s.setdefault('dialog_tools', False)
     return s
@@ -31,6 +32,40 @@ def load(path):
         dlg = Dialog(name=path.stem)
         dlg.path_ = str(path)
     settings(dlg)
+    return dlg
+
+
+def setup_parts(folder):
+    "(code, notes) of the folder's SETUP dialog: code runs when a kernel starts, notes go to the AI in every dialog."
+    path = Path(folder) / f'{SETUP}.ipynb'
+    if not path.exists(): return [], ''
+    try: ms = read_ipynb(path, name=SETUP).messages
+    except Exception: return [], ''
+    code = [m.content for m in ms if m.msg_type == 'code' and (m.content or '').strip() and not m.skipped]
+    notes = '\n\n'.join(m.content for m in ms if m.msg_type == 'note' and (m.content or '').strip() and not m.skipped)
+    return code, notes
+
+
+SETUP_TEMPLATE = [
+    ('note', """# Project setup
+
+This dialog configures every other dialog in this folder.
+
+- **Code messages here run each time a kernel starts or restarts**, before anything else. Use them for imports you always want, `autoreload`, environment variables, and test doubles for things that are not available on your machine (databases, queues, internal services).
+- **Notes here are given to the AI in every dialog**, like a standing brief. Write down what the project is, its conventions, and its vocabulary. Hide a note (`h`) to keep it for yourself.
+
+Edit and test it like any dialog. Changes apply to other dialogs the next time their kernel restarts."""),
+    ('code', "# Pick up edits to the project's files without restarting the kernel\n%load_ext autoreload\n%autoreload 2"),
+    ('note', "## About this project\n\n*(Replace this: what the codebase does, the main packages, naming conventions, how tests are run.)*"),
+    ('code', "# Stand-ins for things you can't reach from here. For example:\n# import os\n# os.environ['DATABASE_URL'] = 'sqlite:///:memory:'"),
+]
+
+
+def make_setup(folder):
+    dlg = load(Path(folder) / f'{SETUP}.ipynb')
+    if not dlg.messages:
+        for typ, src in SETUP_TEMPLATE: dlg.mk_message(src, msg_type=typ)
+        dlg.save()
     return dlg
 
 
@@ -113,6 +148,12 @@ Write a function with type hints and a docstring, then mention it in any message
 Tick **AI can edit dialog** in the header and the AI gets tools to add, edit, find and run messages (`add_msg`, `update_msg`, `run_msg`, …). They are ordinary functions that you can call from code too — try `add_msg('hello from code', 'note')` in a code message.
 
 Use it for chores — *"add a heading above each step"*, *"put that function in a code message and run it"* — while you stay the one who decides what the next step is."""),
+    ('note', """## 6. Working on real code
+
+- **See where a name comes from**: hold `Ctrl` and click any name in a code message. You get its source, file and line; `Ctrl`+click inside that source to keep following it. *Insert as code* copies the definition into a cell you can run and change line by line.
+- **Grill mode** (header): instead of answering, the AI interviews you about your plan, or about what a piece of code does, one round of questions at a time, with a recommended answer for each.
+- **Project setup**: from the dialog list, *Create project setup* makes a `SETUP` dialog. Its code runs whenever a kernel starts; its notes go to the AI in every dialog.
+- **Your coding agent** can connect to this notebook (the start-up message shows how). What it runs then appears here as cells marked *added by agent*, and it cannot change cells you wrote."""),
 ]
 
 

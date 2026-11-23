@@ -4,6 +4,7 @@ Nothing here knows about a particular provider. Point it at any endpoint with
 POLYA_BASE_URL / POLYA_API_KEY / POLYA_MODEL (see README); the request goes there and nowhere else.
 """
 import os
+from pathlib import Path
 
 from aidialog.msg_parts import Part, Text, ToolResult, mk_tool_res_msg
 from aihist import Reply, build, references
@@ -32,19 +33,36 @@ How to work here:
 - If the request is ambiguous, ask one short clarifying question instead of guessing.
 - Format replies in markdown. Be direct and plain: no flattery, no filler."""
 
-MODE_SP = {
-    'learning': """Mode: LEARNING. The user wants to build their own skill, not just get an answer.
-- If you do not yet know their background or what they have tried, ask briefly before explaining.
-- Guide rather than hand over: give a hint, the next single step, or a question that leads them to it. Let them write the code. Only give a complete solution when they explicitly ask for one.
-- When you do show code, show one or two lines for one step, say what output to expect, and invite them to run it and report back.
-- When they hit an error, help them read it and find the cause themselves before you fix it.
-- Keep replies short, and end with the next thing for them to try or decide.""",
-    'concise': """Mode: CONCISE. The user knows what they want.
-- Answer in as few words as will do. No preamble, no recap, no closing offers.
-- Give compact, idiomatic code for the step asked about, with at most a line of explanation.
-- Still one step at a time: do not expand the scope beyond what was asked.""",
-    'standard': """Mode: STANDARD. Explain your reasoning at normal length, with code examples where they help, while still working in small steps the user can verify.""",
-}
+SKILLS = Path(__file__).parent / 'skills'
+
+GRILL_SP = """Mode: GRILL. In this mode you follow the skill below, written by Matt Pocock for coding agents (MIT licence), instead of answering directly. It is how the user stress-tests a plan, a design, or their understanding of a piece of code before anything gets written.
+
+How the skill applies inside this notebook:
+- You have no sub-agents. When a question needs a fact, look for it yourself first: in the dialog above, in the <variables>, or with a tool if the user gave you one that can find it (for example one that reads source code or searches the repository). Ask the user only for decisions, and for facts that you have no way to look up.
+- Each round is one reply. The user answers in their next prompt; they may also answer by editing your reply.
+- When the frontier is empty, summarise the settled decisions as a short numbered list and stop. Do not write the code for them unless they then ask.
+
+<skill name="{name}">
+{body}
+</skill>"""
+
+
+def _skill_text(path):
+    "A SKILL.md body without its frontmatter."
+    txt = path.read_text(encoding='utf8')
+    if txt.startswith('---'): txt = txt.split('---', 2)[-1]
+    return txt.strip()
+
+
+def grill_prompt(folder=None):
+    "The grilling skill, plus any extra skill files the user put in `<dialogs>/skills/`."
+    sp = GRILL_SP.format(name='grilling', body=_skill_text(SKILLS / 'grilling' / 'SKILL.md'))
+    extra = sorted(Path(folder, 'skills').glob('**/*.md')) if folder and Path(folder, 'skills').is_dir() else []
+    for f in extra[:10]:
+        name = f.parent.name if f.name.upper() == 'SKILL.MD' else f.stem
+        sp += f'\n\nThe user also installed this skill; follow it when it applies:\n<skill name="{name}">\n{_skill_text(f)[:12000]}\n</skill>'
+    return sp
+
 
 TOOLS_SP = """You have tools. They are Python functions that the user chose to give you; calling one really runs it.
 - Use a tool when the user asks for it, or when it is clearly the way to get what they asked for. Otherwise just answer.
@@ -52,8 +70,10 @@ TOOLS_SP = """You have tools. They are Python functions that the user chose to g
 - Messages you add appear right after the current prompt, in the order you add them."""
 
 
-def system_prompt(mode, has_tools):
-    sp = BASE_SP + '\n\n' + MODE_SP.get(mode, MODE_SP['standard'])
+def system_prompt(mode, has_tools, folder=None, notes=''):
+    sp = BASE_SP
+    if notes: sp += '\n\nStanding notes from the user about this project (they apply to every dialog):\n<project-notes>\n' + notes[:20000] + '\n</project-notes>'
+    if mode == 'grill': sp += '\n\n' + grill_prompt(folder)
     return sp + ('\n\n' + TOOLS_SP if has_tools else '')
 
 
@@ -83,7 +103,7 @@ async def run_turn(s, prompt, emit, stopped):
 
     items = build(dlg, prompt.id, info, vars=recs) if recs else build(dlg, prompt.id, info)
     msgs, _ = response_input(items)
-    system = system_prompt(settings(dlg)['mode'], bool(tools))
+    system = system_prompt(settings(dlg)['mode'], bool(tools), s.folder, s.project_notes())
     if notes: system += '\n\nNote for this turn: ' + ' '.join(notes)
     kw = dict(stream=True, system=system, max_tokens=int(os.environ.get('POLYA_MAX_TOKENS', 4096)), **model_cfg(dlg))
     if tools: kw['tools'] = tools

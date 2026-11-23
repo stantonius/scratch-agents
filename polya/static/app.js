@@ -73,7 +73,13 @@
         },
         'Shift-Tab': cm => cm.indentSelection('subtract'),
         'Cmd-/': 'toggleComment', 'Ctrl-/': 'toggleComment',
+        F12: cm => showDef(nameAt(cm.getValue(), cm.indexFromPos(cm.getCursor()))),
       }, keys),
+    });
+    cm.on('mousedown', (cm, e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      showDef(nameAt(cm.getValue(), cm.indexFromPos(cm.coordsChar({left: e.clientX, top: e.clientY}))));
     });
     return cm;
   }
@@ -114,6 +120,58 @@
     await post(body);
     if (advance) step(1);
     msgsEl.focus();
+  }
+
+  // ---------------------------------------------------------------- go to definition
+  // The dotted name around a position: clicking `join` in `os.path.join(` gives `os.path.join`, clicking `os` gives `os`.
+  function nameAt(text, pos) {
+    let a = pos, b = pos;
+    while (a > 0 && /[\w.]/.test(text[a - 1])) a--;
+    while (b < text.length && /\w/.test(text[b])) b++;
+    return text.slice(a, b).replace(/^[.\d]+/, '');
+  }
+  function nameAtPoint(pre, x, y) {
+    const r = document.caretRangeFromPoint ? document.caretRangeFromPoint(x, y) : null;
+    if (!r || !pre.contains(r.startContainer)) return '';
+    const upto = document.createRange();
+    upto.setStart(pre, 0); upto.setEnd(r.startContainer, r.startOffset);
+    return nameAt(pre.textContent, upto.toString().length);
+  }
+  let defStack = [], defCur = null;
+  async function showDef(name, ctx = '', push = true) {
+    if (!name) return;
+    const d = await fetch(base + '/definition', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name, ctx})}).then(r => r.json()).catch(() => ({error: 'Lookup failed'}));
+    if (d.error) return toast(d.error);
+    if (push && defCur) defStack.push(defCur);
+    d.ctxUsed = ctx;
+    defCur = d;
+    $('#defn').hidden = false;
+    $('#dback').disabled = !defStack.length;
+    $('#dtitle').textContent = `${d.qualname}${d.signature || ''}`;
+    const meta = $('#dmeta');
+    meta.replaceChildren();
+    const where = document.createElement('div'); where.className = 'path';
+    where.textContent = `${d.kind}${d.module ? ' in ' + d.module : ''}  ·  ${d.file ? d.file + ':' + d.line : 'no source file'}`;
+    meta.append(where);
+    if (d.note) { const n = document.createElement('div'); n.className = 'dnote'; n.textContent = d.note; meta.append(n); }
+    const hint = document.createElement('div'); hint.textContent = 'Ctrl+click a name in this source to follow it further.'; meta.append(hint);
+    $('#dbody').innerHTML = d.html || '';
+    if (!d.html && d.doc) { const p = document.createElement('pre'); p.textContent = d.doc; $('#dbody').append(p); }
+    $('#dcode').disabled = $('#dnote').disabled = !d.source;
+    $('#dbody').scrollTop = 0;
+  }
+  function closeDef() { $('#defn').hidden = true; defStack = []; defCur = null; }
+  async function insertDef(asNote) {
+    const d = defCur;
+    if (!d || !d.source) return;
+    const where = `${d.file || 'unknown file'}:${d.line}`;
+    const content = asNote
+      ? `Definition of \`${d.name}\` (${where}):\n\n\`\`\`python\n${d.source.replace(/\n$/, '')}\n\`\`\``
+      : `# Copy of ${d.module ? d.module + '.' : ''}${d.qualname} from ${where}\n# Running this redefines the name in this kernel only; the file is not changed.\n${d.source.replace(/\n$/, '')}`;
+    const body = {op: 'add', type: asNote ? 'note' : 'code', content};
+    if (selected) body.after = selected;
+    const r = await post(body);
+    if (r.id) { wantSelect = r.id; if (byId(r.id)) select(r.id); toast(asNote ? 'Added as a note' : 'Added as a code message (not run)'); }
   }
 
   // ---------------------------------------------------------------- bottom editor
@@ -241,6 +299,8 @@
     k.className = 'kstat ' + (ev.busy ? 'busy' : (ev.alive ? 'idle' : 'off'));
     $('#ktext').textContent = ev.busy ? 'working…' : (ev.alive ? 'kernel idle' : 'kernel not started');
     $('#ctx').textContent = `AI context ≈ ${ev.tokens.toLocaleString()} tokens`;
+    const ban = $('#banner');
+    ban.hidden = !ev.setup_error; ban.textContent = ev.setup_error || '';
     if (wasBusy && !ev.busy) refreshVars();
     wasBusy = ev.busy;
   }
@@ -295,6 +355,10 @@
     if (!m) return;
     const b = e.target.closest('.act');
     if (b) { select(m.dataset.id, false); act(b.dataset.act, m.dataset.id); return; }
+    if ((e.ctrlKey || e.metaKey) && e.target.closest('pre') && !e.target.closest('.editor')) {
+      e.preventDefault();
+      return showDef(nameAtPoint(e.target.closest('pre'), e.clientX, e.clientY));
+    }
     if (e.target.closest('.editor, a, summary, details')) return;
     if (selected === m.dataset.id && !editing && !window.getSelection().toString() && e.target.closest('.min')) return startEdit(m.dataset.id);
     select(m.dataset.id, false);
@@ -308,6 +372,7 @@
   document.addEventListener('keydown', e => {
     const help = $('#help');
     if (!help.hidden) { if (e.key === 'Escape' || e.key === '?') { help.hidden = true; e.preventDefault(); } return; }
+    if (e.key === 'Escape' && !$('#defn').hidden && !e.target.closest('.CodeMirror')) { closeDef(); e.preventDefault(); return; }
     const mod = e.ctrlKey || e.metaKey;
     const typeKey = {KeyJ: 'code', KeyK: 'note', KeyL: 'prompt'}[e.code];
     const inEditor = e.target.closest('.CodeMirror, input, textarea, select');
@@ -341,6 +406,19 @@
     if (/^[1-6]$/.test(k) && selected) { e.preventDefault(); heading(selected, +k); return; }
     if (map[k]) { e.preventDefault(); map[k](); }
   });
+
+  const modkey = e => document.body.classList.toggle('modkey', e.ctrlKey || e.metaKey);
+  document.addEventListener('keydown', modkey); document.addEventListener('keyup', modkey); window.addEventListener('blur', () => document.body.classList.remove('modkey'));
+  $('#dbody').addEventListener('click', e => {
+    const pre = e.target.closest('pre');
+    if (!pre || !(e.ctrlKey || e.metaKey) || !defCur) return;
+    e.preventDefault();
+    showDef(nameAtPoint(pre, e.clientX, e.clientY), defCur.module);
+  });
+  $('#dclose').onclick = closeDef;
+  $('#dback').onclick = () => { const d = defStack.pop(); if (d) { defCur = null; showDef(d.name, d.ctxUsed || '', false); } };
+  $('#dcode').onclick = () => insertDef(false);
+  $('#dnote').onclick = () => insertDef(true);
 
   function restart() { if (confirm('Restart the kernel? All variables will be lost.')) post({op: 'restart'}); }
 

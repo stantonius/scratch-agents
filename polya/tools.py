@@ -8,7 +8,8 @@ from fastcore.funccall import get_schema
 from . import helper
 from .dialogs import MSG_TYPES, reply
 
-NAMES = [n for n in helper.__all__ if n != 'tool_info']
+NAMES = list(helper.DIALOG_TOOLS)
+OWN_ONLY = ('update_msg', 'del_msg', 'msg_str_replace')   # an outside agent may change only what it wrote itself
 
 
 def schemas(names=NAMES):
@@ -26,6 +27,7 @@ async def add_msg(s, origin, content, msg_type='note', after='', before='', run=
     else:
         anchor = after or s.cursor_id or s.current_id
         kw = dict(after=_msg(s, anchor)) if anchor and s.has(anchor) else {}
+    if origin in ('ai', 'agent'): kw['meta'] = {'polya_by': origin}   # so you can see who wrote it
     m = s.dlg.mk_message(content, msg_type=msg_type, **kw)
     if not after and not before: s.cursor_id = m.id
     s.changed(m)
@@ -84,7 +86,8 @@ async def run_msg(s, origin, id):
         # Called from a running code message: the kernel is busy with that cell, so run this one afterwards.
         s.queue_run(m)
         return f'Message {id} is queued and will run when the current message finishes.'
-    await s.exec_code(m)
+    if origin == 'agent': await s.run_code(m)    # from outside: wait its turn like any other run
+    else: await s.exec_code(m)                   # the notebook's own AI, already inside its turn
     return m.ai_output or '(no output)'
 
 
@@ -94,4 +97,9 @@ IMPL = dict(add_msg=add_msg, update_msg=update_msg, del_msg=del_msg, read_msg=re
 
 async def call(s, origin, name, args):
     if name not in IMPL: raise ValueError(f'Unknown dialog tool {name!r}')
+    if origin == 'agent' and name in OWN_ONLY:
+        m = _msg(s, (args or {}).get('id'))
+        if (m.meta or {}).get('polya_by') != 'agent':
+            raise ValueError(f'Message {m.id} was written by the user. You may only change messages you added yourself. '
+                             'To propose a change, add a new message with add_msg.')
     return await IMPL[name](s, origin, **{k: v for k, v in (args or {}).items() if v is not None})

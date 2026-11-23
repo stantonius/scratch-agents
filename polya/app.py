@@ -7,17 +7,19 @@ from aihist import dlg2md, msgs2py
 from fasthtml.common import (H1, H2, A, Body, Button, Div, FastHTML, Form, Head, Html, Input, Label, Li, Link, Main, Meta, NotStr,
                              Option, P, Script, Select, Span, Style, Title, Ul)
 from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
-from starlette.routing import Mount
+from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, ai, tools as dtools
-from .dialogs import MODES, MSG_TYPES, add_stream_output, fenced_blocks, load, make_welcome, msg_tokens, reply, set_reply, settings, valid_name
+from . import __version__, agent, ai, tools as dtools
+from .dialogs import (MODES, MSG_TYPES, SETUP, add_stream_output, fenced_blocks, load, make_setup, make_welcome, msg_tokens, reply, set_reply,
+                      settings, setup_parts, valid_name)
 from .kernel import Kernel
-from .render import msg_html, theme_css
+from .render import code_html, msg_html, theme_css
 
 STATIC = Path(__file__).parent / 'static'
-CFG = dict(dir=Path(os.environ.get('POLYA_DIR', 'dialogs')), url='http://127.0.0.1:5001')
+CFG = dict(dir=Path(os.environ.get('POLYA_DIR', 'dialogs')), url='http://127.0.0.1:5001', project=None)
 TOKEN = secrets.token_urlsafe(24)   # lets a dialog's own kernel call back into this server
+AGENT_TOKEN = os.environ.get('POLYA_AGENT_TOKEN') or secrets.token_urlsafe(24)   # for an outside coding agent, over /mcp
 sessions = {}
 
 
@@ -27,7 +29,14 @@ class Session:
     def __init__(self, name):
         self.name = name
         self.dlg = load(CFG['dir'] / f'{name}.ipynb')
-        self.kernel = Kernel(CFG['dir'].resolve(), dict(POLYA_URL=CFG['url'], POLYA_DIALOG=name, POLYA_TOKEN=TOKEN))
+        self.folder = CFG['dir'].resolve()
+        env = dict(POLYA_URL=CFG['url'], POLYA_DIALOG=name, POLYA_TOKEN=TOKEN)
+        cwd = self.folder
+        if CFG['project']:      # work inside the user's codebase: start there and make it importable
+            cwd = Path(CFG['project']).resolve()
+            env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(cwd), os.environ.get('PYTHONPATH', '')]))
+        # The SETUP dialog's code runs at every kernel start (but not for the SETUP dialog itself, where you run it by hand).
+        self.kernel = Kernel(cwd, env, setup=None if name == SETUP else (lambda: setup_parts(self.folder)[0]))
         self.subs = set()
         self.lock = asyncio.Lock()      # one code run or AI turn at a time, in order
         self.stop = False
@@ -55,8 +64,10 @@ class Session:
     def push(self, m):
         if self.has(m.id): self.broadcast(dict(op='upsert', id=m.id, after=self.prev_id(m), html=self.html(m)))
 
+    def project_notes(self): return '' if self.name == SETUP else setup_parts(self.folder)[1]
+
     def status(self):
-        self.broadcast(dict(op='status', busy=bool(self.running), alive=self.kernel.alive,
+        self.broadcast(dict(op='status', busy=bool(self.running), alive=self.kernel.alive, setup_error=self.kernel.setup_error,
                             tokens=sum(msg_tokens(m) for m in self.dlg.messages if not m.skipped)))
 
     def save(self): self.dlg.save()
@@ -170,7 +181,8 @@ async def _shutdown():
     for s in list(sessions.values()): await s.kernel.shutdown()
 
 app = FastHTML(default_hdrs=False, secret_key=secrets.token_hex(16), before=guard, on_shutdown=[_shutdown],
-               routes=[Mount('/static', StaticFiles(directory=STATIC), name='static')])
+               routes=[Mount('/static', StaticFiles(directory=STATIC), name='static'),
+                       Route('/mcp', endpoint=agent.mcp_app(AGENT_TOKEN), methods=['GET', 'POST', 'DELETE'])])
 rt = app.route
 
 
@@ -192,6 +204,7 @@ def home():
         make_welcome(CFG['dir'] / 'welcome.ipynb')
         names = dialog_names()
     rows = [Li(A(n, href=f'/d/{n}', cls='dname'),
+               Span('runs at every kernel start', cls='pill setup') if n == SETUP else '',
                Span('kernel running', cls='pill') if n in sessions and sessions[n].kernel.alive else '',
                Span(cls='grow'),
                Form(Button('Duplicate', cls='ghost'), method='post', action=f'/d/{n}/duplicate'),
@@ -204,6 +217,9 @@ def home():
         Form(Input(name='name', placeholder='New dialog name', required=True, pattern=r'[\w][\w\-. ]*', autofocus=True),
              Button('Create dialog', cls='primary'), method='post', action='/new', cls='newdlg'),
         H2('Dialogs'), Ul(*rows, cls='dlist'),
+        '' if SETUP in names else Form(Button('Create project setup', cls='ghost'), Span(' — code that runs when any kernel starts, and standing notes for the AI', cls='fine'),
+                                         method='post', action='/setup', cls='setupform'),
+        P(f"Kernels start in: {Path(CFG['project']).resolve() if CFG['project'] else CFG['dir'].resolve()}", cls='fine'),
         P(f"Dialogs are .ipynb files in {CFG['dir'].resolve()}. ",
           f"AI requests go to: {os.environ.get('POLYA_BASE_URL') or 'the provider default for the model'} (default model {os.environ.get('POLYA_MODEL') or cfg.get('model', '')}).",
           cls='fine'),
@@ -217,6 +233,12 @@ async def new(req):
     path = CFG['dir'] / f'{name}.ipynb'
     if not path.exists(): load(path).save()
     return RedirectResponse(f'/d/{name}', status_code=303)
+
+
+@rt('/setup', methods=['POST'])
+def create_setup():
+    make_setup(CFG['dir'])
+    return RedirectResponse(f'/d/{SETUP}', status_code=303)
 
 
 @rt('/d/{name}/delete', methods=['POST'])
@@ -241,7 +263,7 @@ def duplicate(name: str):
 HELP = [
     ('Moving around', [('↑ ↓  or  k j', 'select previous / next message'), ('Home / End', 'first / last message'), ('/', 'jump to the editor at the bottom'), ('Esc', 'leave an editor (saves)')]),
     ('Writing', [('Enter', 'edit the selected message'), ('n', "edit the AI's reply"), ('a / b', 'new message above / below'),
-                 ('Ctrl+Shift+J/K/L', 'make it code / note / prompt (or Alt+J/K/L)'), ('1 – 6', 'make a note a heading of that level'), ('Tab', 'complete code from the live kernel')]),
+                 ('Ctrl+Shift+J/K/L', 'make it code / note / prompt (or Alt+J/K/L)'), ('1 – 6', 'make a note a heading of that level'), ('Tab', 'complete code from the live kernel'), ('Ctrl+click a name', 'show where it is defined, with its source (F12 in an editor)')]),
     ('Running', [('Ctrl+Enter', 'run code, or send a prompt to the AI'), ('Shift+Enter', 'run and move to the next message'), ('Alt+Enter', 'in the bottom editor: send a prompt and stay in prompt mode'),
                  ('r', 'run all code messages'), ('Shift+S', 'stop the running code or AI reply'), ('Shift+R', 'restart the kernel'), ('Backspace', "clear a code message's output")]),
     ('Dialog engineering', [('w', "copy the AI's code blocks into code messages"), ('h', 'hide a message from the AI / show it again'), ('p', 'pin a message so it always stays in the AI context'),
@@ -260,7 +282,7 @@ def dialog(name: str):
         Span(Span(cls='dot'), Span('kernel idle', id='ktext'), id='kstat', cls='kstat'),
         Span(cls='grow'),
         Label('Mode', Select(*[Option(m, value=m, selected=(m == st['mode'])) for m in MODES], id='mode'),
-              title='Learning: the AI guides you step by step. Concise: short direct answers. Standard: fuller explanations.'),
+              title='basic: the AI answers, one small step at a time. grill: the AI interviews you about your plan or your understanding, round by round, before anything is written.'),
         Label(Input(type='checkbox', id='dtools', checked=st['dialog_tools']), 'AI can edit dialog',
               title='Give the AI tools to add, edit, find and run messages in this dialog', cls='chk'),
         Label('Model', Input(id='model', value=st['model'], placeholder=os.environ.get('POLYA_MODEL') or 'default', size=16),
@@ -285,6 +307,12 @@ def dialog(name: str):
     return page(f'{name} · Polya', header,
                 Div(Main(NotStr(msgs), id='msgs'), Div(Div(H2('Outline'), Div(id='outline'), H2('Variables'), Div(id='vars'), H2('Functions'), Div(id='funcs')), id='side', hidden=True), cls='work'),
                 composer, helpdlg,
+                Div(Div(Button('←', id='dback', title='Back'), Span(id='dtitle'), Span(cls='grow'),
+                        Button('Insert as code', id='dcode', title='Copy this source into a code message you can run and change (it redefines the name in this kernel only)'),
+                        Button('Insert as note', id='dnote', title='Put this source in a note so the AI sees it'),
+                        Button('✕', id='dclose', title='Close (Esc)'), cls='dhead'),
+                    Div(id='dmeta', cls='dmeta'), Div(id='dbody', cls='dbody'), id='defn', hidden=True),
+                Div(id='banner', hidden=True),
                 Script(src=f'/static/vendor/codemirror.js?v={__version__}'), Script(src=f'/static/vendor/codemirror-extras.js?v={__version__}'),
                 Script(src=f'/static/app.js?v={__version__}'), cls='dlgbody', data={'data-dialog': name})
 
@@ -349,7 +377,9 @@ async def do(name: str, req):
             keep = reply(m) if m.msg_type == 'prompt' else ''
             m.msg_type = b['type']
             if keep and b['type'] == 'prompt': set_reply(m, keep)
-        if 'content' in b: m.content = b['content']
+        if 'content' in b:
+            if b['content'] != m.content: m.meta.pop('polya_by', None)   # you edited it: it is yours now
+            m.content = b['content']
         if 'reply' in b and m.msg_type == 'prompt': set_reply(m, b['reply'])
         if 'hidden' in b: m.skipped = int(bool(b['hidden']))
         if 'pinned' in b: m.pinned = int(bool(b['pinned']))
@@ -405,8 +435,20 @@ async def variables(name: str):
     s = get_session(name)
     if s is None or s.running: return J(vars={}, funcs={}, busy=True)
     v, f = await s.kernel.user_items()
-    hide = set(dtools.NAMES) | {'tool_info'}
+    hide = set(dtools.helper.__all__)
     return J(vars=v, funcs={k: sig for k, sig in f.items() if k not in hide})
+
+
+@rt('/d/{name}/definition', methods=['POST'])
+async def definition(name: str, req):
+    "Go to definition: where a name used in a code message comes from, with its source."
+    s = get_session(name)
+    b = await req.json()
+    if s is None: return J(error='No such dialog')
+    if s.running and not s.kernel.sidecar: return J(error='The kernel is busy. Try again when it is idle.')
+    d = await s.kernel.definition(str(b.get('name', ''))[:300], str(b.get('ctx', ''))[:300])
+    if 'error' not in d: d['html'] = code_html(d['source']) if d['source'] else ''
+    return J(**d)
 
 
 @rt('/d/{name}/complete', methods=['POST'])
