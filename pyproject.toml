@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polya"
+version = "0.1.0"
+description = "A small self-hosted dialog notebook for working the 'solve it' way: code, notes and AI prompts in one place"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-fasthtml>=0.14",   # web app
+    "aidialog>=0.0.42",        # dialog model + .ipynb storage
+    "aihist>=0.1.11",          # dialog -> model input, saved reply format
+    "python-fastllm>=0.0.80",  # model calls
+    "ipymini>=0.1.29",         # the kernel
+    "conkernelclient>=0.0.23", # kernel client
+    "ipyfuncs>=0.0.1",         # kernel-side helpers (tool schemas, variables)
+    "mdhtml>=0.1.50",          # markdown rendering
+    "fastpylight>=0.1.19",     # syntax highlighting
+    "fastcore>=2.2.37",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "playwright"]
+
+[project.scripts]
+polya = "polya.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["polya*"]
+
+[tool.setuptools.package-data]
+polya = ["static/*", "static/vendor/*"]

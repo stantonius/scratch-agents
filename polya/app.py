@@ -1,0 +1,441 @@
+"The Polya web app: a FastHTML server holding live dialogs, their kernels, and the AI turns."
+import asyncio, json, os, secrets, shutil, time
+from pathlib import Path
+from urllib.parse import urlparse
+
+from aihist import dlg2md, msgs2py
+from fasthtml.common import (H1, H2, A, Body, Button, Div, FastHTML, Form, Head, Html, Input, Label, Li, Link, Main, Meta, NotStr,
+                             Option, P, Script, Select, Span, Style, Title, Ul)
+from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
+from starlette.routing import Mount
+from starlette.staticfiles import StaticFiles
+
+from . import __version__, ai, tools as dtools
+from .dialogs import MODES, MSG_TYPES, add_stream_output, fenced_blocks, load, make_welcome, msg_tokens, reply, set_reply, settings, valid_name
+from .kernel import Kernel
+from .render import msg_html, theme_css
+
+STATIC = Path(__file__).parent / 'static'
+CFG = dict(dir=Path(os.environ.get('POLYA_DIR', 'dialogs')), url='http://127.0.0.1:5001')
+TOKEN = secrets.token_urlsafe(24)   # lets a dialog's own kernel call back into this server
+sessions = {}
+
+
+# ---------------------------------------------------------------- live dialog state
+class Session:
+    "A dialog that is open in the server: its messages, its kernel, and the browsers watching it."
+    def __init__(self, name):
+        self.name = name
+        self.dlg = load(CFG['dir'] / f'{name}.ipynb')
+        self.kernel = Kernel(CFG['dir'].resolve(), dict(POLYA_URL=CFG['url'], POLYA_DIALOG=name, POLYA_TOKEN=TOKEN))
+        self.subs = set()
+        self.lock = asyncio.Lock()      # one code run or AI turn at a time, in order
+        self.stop = False
+        self.current_id = self.cursor_id = None
+        self.running, self.live, self.errors = set(), {}, {}
+        self.tasks = set()
+
+    # -- lookups
+    def has(self, id):
+        return any(m.id == id for m in self.dlg.messages)
+
+    def prev_id(self, m):
+        ms = self.dlg.messages
+        i = ms.index(m)
+        return ms[i - 1].id if i else ''
+
+    # -- telling browsers
+    def broadcast(self, ev):
+        data = json.dumps(ev)
+        for q in list(self.subs): q.put_nowait(data)
+
+    def html(self, m):
+        return msg_html(m, live=self.live.get(m.id), running=m.id in self.running, error=self.errors.get(m.id, ''))
+
+    def push(self, m):
+        if self.has(m.id): self.broadcast(dict(op='upsert', id=m.id, after=self.prev_id(m), html=self.html(m)))
+
+    def status(self):
+        self.broadcast(dict(op='status', busy=bool(self.running), alive=self.kernel.alive,
+                            tokens=sum(msg_tokens(m) for m in self.dlg.messages if not m.skipped)))
+
+    def save(self): self.dlg.save()
+
+    def changed(self, m):
+        "A message was added or edited: save and show it."
+        self.save(); self.push(m); self.status()
+
+    def remove(self, m):
+        self.dlg.remove_msgs([m])
+        for d in (self.live, self.errors): d.pop(m.id, None)
+        self.save(); self.broadcast(dict(op='delete', id=m.id)); self.status()
+
+    def spawn(self, coro):
+        t = asyncio.create_task(coro)
+        self.tasks.add(t); t.add_done_callback(self.tasks.discard)
+        return t
+
+    # -- running things
+    async def exec_code(self, m):
+        "Run code message `m` now, streaming its outputs to browsers. Returns True if it ran without error."
+        m.output = []
+        self.running.add(m.id); self.push(m); self.status()
+        last = 0
+        try:
+            async for jm in self.kernel.run(m.content):
+                add_stream_output(m, jm)
+                if time.monotonic() - last > 0.08: self.push(m); last = time.monotonic()
+        except Exception as e:
+            m.output = (m.output or []) + [dict(output_type='error', ename=type(e).__name__, evalue=str(e),
+                                                 traceback=[f'{type(e).__name__}: {e}', 'The kernel may have died; it will restart on the next run.'])]
+            await self.kernel.shutdown()
+        finally:
+            self.running.discard(m.id)
+            self.changed(m)
+        return not any(o.get('output_type') == 'error' for o in m.output or [])
+
+    async def run_code(self, m):
+        self.running.add(m.id); self.push(m)    # show it as queued straight away
+        async with self.lock:
+            if not self.has(m.id): return False
+            self.current_id = self.cursor_id = m.id
+            try: return await self.exec_code(m)
+            finally: self.current_id = self.cursor_id = None
+
+    def queue_run(self, m): self.spawn(self.run_code(m))
+
+    async def run_prompt(self, m):
+        self.errors.pop(m.id, None)
+        self.running.add(m.id); self.live[m.id] = ''; self.push(m)
+        async with self.lock:
+            if not self.has(m.id): return
+            self.stop, self.current_id, self.cursor_id, last = False, m.id, m.id, [0.0]
+
+            def emit(text):
+                self.live[m.id] = text
+                if time.monotonic() - last[0] > 0.08: self.push(m); last[0] = time.monotonic()
+            self.status()
+            try:
+                notes = await ai.run_turn(self, m, emit, lambda: self.stop)
+                if notes: self.errors[m.id] = '\n'.join(notes)
+            except Exception as e:
+                self.errors[m.id] = f'The model request failed — {type(e).__name__}: {str(e)[:1500]}\n(model: {ai.model_cfg(self.dlg)["model"]}, endpoint: {os.environ.get("POLYA_BASE_URL", "provider default")})'
+            finally:
+                self.running.discard(m.id); self.live.pop(m.id, None)
+                self.current_id = self.cursor_id = None
+                self.changed(m)
+
+    async def run_all(self):
+        self.stop = False
+        for m in [m for m in self.dlg.messages if m.msg_type == 'code' and (m.content or '').strip()]:
+            if self.stop or not self.has(m.id): break
+            if not await self.run_code(m): break
+
+    async def interrupt(self):
+        self.stop = True
+        await self.kernel.interrupt()
+
+    async def restart(self):
+        self.stop = True
+        await self.kernel.shutdown()
+        self.status()
+
+
+def get_session(name):
+    if name not in sessions:
+        if not valid_name(name) or not (CFG['dir'] / f'{name}.ipynb').exists(): return None
+        sessions[name] = Session(name)
+    return sessions[name]
+
+
+def dialog_names():
+    CFG['dir'].mkdir(parents=True, exist_ok=True)
+    return sorted((p.stem for p in CFG['dir'].glob('*.ipynb') if valid_name(p.stem)), key=str.lower)
+
+
+# ---------------------------------------------------------------- app
+def _same_origin(req):
+    "POSTs must come from this app's own pages (or from a kernel holding the token)."
+    if req.method != 'POST': return True
+    if secrets.compare_digest(req.headers.get('x-polya-token', ''), TOKEN): return True
+    origin = req.headers.get('origin')
+    return bool(origin) and urlparse(origin).netloc == req.headers.get('host')
+
+
+async def guard(req):
+    if not _same_origin(req): return PlainTextResponse('Cross-origin request refused', status_code=403)
+
+
+async def _shutdown():
+    for s in list(sessions.values()): await s.kernel.shutdown()
+
+app = FastHTML(default_hdrs=False, secret_key=secrets.token_hex(16), before=guard, on_shutdown=[_shutdown],
+               routes=[Mount('/static', StaticFiles(directory=STATIC), name='static')])
+rt = app.route
+
+
+def J(**kw): return JSONResponse(kw)
+
+
+def page(title, *body, cls='', data=None):
+    v = __version__
+    head = Head(Meta(charset='utf-8'), Meta(name='viewport', content='width=device-width, initial-scale=1'), Title(title),
+                Link(rel='stylesheet', href=f'/static/vendor/codemirror.css?v={v}'), Link(rel='stylesheet', href=f'/static/app.css?v={v}'),
+                Style(NotStr(theme_css())))
+    return Html(head, Body(*body, cls=cls, **(data or {})), lang='en')
+
+
+@rt('/')
+def home():
+    names = dialog_names()
+    if not names:
+        make_welcome(CFG['dir'] / 'welcome.ipynb')
+        names = dialog_names()
+    rows = [Li(A(n, href=f'/d/{n}', cls='dname'),
+               Span('kernel running', cls='pill') if n in sessions and sessions[n].kernel.alive else '',
+               Span(cls='grow'),
+               Form(Button('Duplicate', cls='ghost'), method='post', action=f'/d/{n}/duplicate'),
+               Form(Button('Delete', cls='ghost danger'), method='post', action=f'/d/{n}/delete',
+                    onsubmit=f"return confirm('Delete dialog {n}? This removes the file.')"))
+            for n in names]
+    cfg = ai.model_cfg(load(CFG['dir'] / f'{names[0]}.ipynb')) if names else {}
+    return page('Polya', Main(
+        H1('Polya'), P('Solve problems in small, verified steps — with code, notes and an AI that sees what you see.', cls='lede'),
+        Form(Input(name='name', placeholder='New dialog name', required=True, pattern=r'[\w][\w\-. ]*', autofocus=True),
+             Button('Create dialog', cls='primary'), method='post', action='/new', cls='newdlg'),
+        H2('Dialogs'), Ul(*rows, cls='dlist'),
+        P(f"Dialogs are .ipynb files in {CFG['dir'].resolve()}. ",
+          f"AI requests go to: {os.environ.get('POLYA_BASE_URL') or 'the provider default for the model'} (default model {os.environ.get('POLYA_MODEL') or cfg.get('model', '')}).",
+          cls='fine'),
+        cls='home'), cls='homebody')
+
+
+@rt('/new', methods=['POST'])
+async def new(req):
+    name = ((await req.form()).get('name') or '').strip()
+    if not valid_name(name): return PlainTextResponse('Names may use letters, digits, spaces, dots, dashes and underscores.', status_code=400)
+    path = CFG['dir'] / f'{name}.ipynb'
+    if not path.exists(): load(path).save()
+    return RedirectResponse(f'/d/{name}', status_code=303)
+
+
+@rt('/d/{name}/delete', methods=['POST'])
+async def delete_dialog(name: str):
+    if not valid_name(name): return PlainTextResponse('Bad name', status_code=400)
+    if (s := sessions.pop(name, None)): await s.kernel.shutdown()
+    (CFG['dir'] / f'{name}.ipynb').unlink(missing_ok=True)
+    return RedirectResponse('/', status_code=303)
+
+
+@rt('/d/{name}/duplicate', methods=['POST'])
+def duplicate(name: str):
+    src = CFG['dir'] / f'{name}.ipynb'
+    if not valid_name(name) or not src.exists(): return PlainTextResponse('No such dialog', status_code=404)
+    if name in sessions: sessions[name].save()
+    i = 2
+    while (dst := CFG['dir'] / f'{name} {i}.ipynb').exists(): i += 1
+    shutil.copy(src, dst)
+    return RedirectResponse(f'/d/{dst.stem}', status_code=303)
+
+
+HELP = [
+    ('Moving around', [('↑ ↓  or  k j', 'select previous / next message'), ('Home / End', 'first / last message'), ('/', 'jump to the editor at the bottom'), ('Esc', 'leave an editor (saves)')]),
+    ('Writing', [('Enter', 'edit the selected message'), ('n', "edit the AI's reply"), ('a / b', 'new message above / below'),
+                 ('Ctrl+Shift+J/K/L', 'make it code / note / prompt (or Alt+J/K/L)'), ('1 – 6', 'make a note a heading of that level'), ('Tab', 'complete code from the live kernel')]),
+    ('Running', [('Ctrl+Enter', 'run code, or send a prompt to the AI'), ('Shift+Enter', 'run and move to the next message'), ('Alt+Enter', 'in the bottom editor: send a prompt and stay in prompt mode'),
+                 ('r', 'run all code messages'), ('Shift+S', 'stop the running code or AI reply'), ('Shift+R', 'restart the kernel'), ('Backspace', "clear a code message's output")]),
+    ('Dialog engineering', [('w', "copy the AI's code blocks into code messages"), ('h', 'hide a message from the AI / show it again'), ('p', 'pin a message so it always stays in the AI context'),
+                            ('x / c / v', 'cut / copy / paste messages (works across dialogs)'), ('Alt+↑ / Alt+↓', 'move a message up / down')]),
+]
+
+
+@rt('/d/{name}')
+def dialog(name: str):
+    s = get_session(name)
+    if s is None: return RedirectResponse('/', status_code=303)
+    st = settings(s.dlg)
+    msgs = ''.join(s.html(m) for m in s.dlg.messages)
+    header = Div(
+        A('Polya', href='/', cls='brand', title='All dialogs'), Span(name, cls='dtitle'),
+        Span(Span(cls='dot'), Span('kernel idle', id='ktext'), id='kstat', cls='kstat'),
+        Span(cls='grow'),
+        Label('Mode', Select(*[Option(m, value=m, selected=(m == st['mode'])) for m in MODES], id='mode'),
+              title='Learning: the AI guides you step by step. Concise: short direct answers. Standard: fuller explanations.'),
+        Label(Input(type='checkbox', id='dtools', checked=st['dialog_tools']), 'AI can edit dialog',
+              title='Give the AI tools to add, edit, find and run messages in this dialog', cls='chk'),
+        Label('Model', Input(id='model', value=st['model'], placeholder=os.environ.get('POLYA_MODEL') or 'default', size=16),
+              title='Model name sent to your endpoint for this dialog (empty = POLYA_MODEL)'),
+        Button('Run all', id='runall', title='Run every code message from the top (r)'),
+        Button('Stop', id='stop', title='Stop the running code or AI reply (Shift+S)'),
+        Button('Restart', id='restart', title='Restart the kernel: all variables are lost (Shift+R)'),
+        Select(Option('Export…', value=''), Option('Notebook (.ipynb)', value='ipynb'), Option('Markdown (.md)', value='md'),
+               Option('Python script (.py)', value='py'), id='export'),
+        Button('Vars', id='sidetoggle', title='Show the outline and live variables'),
+        Button('?', id='helpbtn', title='Keyboard shortcuts (?)'),
+        cls='top')
+    composer = Div(
+        Div(*[Button(t, cls='ctype', data_type=t, title=f'Next message is a {t} message') for t in ('code', 'note', 'prompt')],
+            Span(id='chint', cls='chint'), Span(cls='grow'), Span('', id='ctx', cls='ctx', title='Approximate size of what the AI sees'),
+            Button('Add', id='csend', cls='primary'), cls='cbar'),
+        Div(id='ceditor'), id='composer')
+    helpdlg = Div(Div(H2('Keyboard shortcuts'), *[Div(H2(sec, cls='hsec'), *[Div(Span(k, cls='key'), Span(d)) for k, d in rows], cls='hgroup') for sec, rows in HELP],
+                      P('In any message: an ampersand then a function name in backticks gives that function to the AI as a tool; '
+                        'a dollar sign then an expression in backticks shows the AI its value.', cls='fine'),
+                      Button('Close', id='helpclose'), cls='helpbox'), id='help', hidden=True)
+    return page(f'{name} · Polya', header,
+                Div(Main(NotStr(msgs), id='msgs'), Div(Div(H2('Outline'), Div(id='outline'), H2('Variables'), Div(id='vars'), H2('Functions'), Div(id='funcs')), id='side', hidden=True), cls='work'),
+                composer, helpdlg,
+                Script(src=f'/static/vendor/codemirror.js?v={__version__}'), Script(src=f'/static/vendor/codemirror-extras.js?v={__version__}'),
+                Script(src=f'/static/app.js?v={__version__}'), cls='dlgbody', data={'data-dialog': name})
+
+
+@rt('/d/{name}/events')
+async def events(name: str, req):
+    s = get_session(name)
+    if s is None: return PlainTextResponse('No such dialog', status_code=404)
+    q = asyncio.Queue()
+    s.subs.add(q)
+
+    async def gen():
+        try:
+            yield 'retry: 1500\n\n'
+            s.status()
+            while True:
+                try: data = await asyncio.wait_for(q.get(), 15)
+                except asyncio.TimeoutError:
+                    yield ': ping\n\n'
+                    continue
+                yield f'data: {data}\n\n'
+        finally: s.subs.discard(q)
+    return StreamingResponse(gen(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+def _raw(m): return dict(id=m.id, type=m.msg_type, content=m.content or '', reply=reply(m), hidden=bool(m.skipped), pinned=bool(m.pinned))
+
+
+@rt('/d/{name}/msg/{id}/raw')
+def msg_raw(name: str, id: str):
+    s = get_session(name)
+    if s is None or not s.has(id): return J(error='No such message')
+    return J(**_raw(s.dlg.msg(id)))
+
+
+@rt('/d/{name}/do', methods=['POST'])
+async def do(name: str, req):
+    "Every edit a browser makes arrives here as {op, ...}."
+    s = get_session(name)
+    if s is None: return J(error='No such dialog')
+    b = await req.json()
+    op, mid = b.get('op'), b.get('id')
+    m = s.dlg.msg(mid) if mid and s.has(mid) else None
+    if mid and m is None: return J(error='That message no longer exists')
+
+    def start(msg):
+        if msg.msg_type == 'code': s.spawn(s.run_code(msg))
+        elif msg.msg_type == 'prompt': s.spawn(s.run_prompt(msg))
+
+    if op == 'add':
+        typ = b.get('type', 'code')
+        if typ not in MSG_TYPES: return J(error='Bad type')
+        kw = {}
+        if b.get('before') and s.has(b['before']): kw['before'] = s.dlg.msg(b['before'])
+        elif b.get('after') and s.has(b['after']): kw['after'] = s.dlg.msg(b['after'])
+        nm = s.dlg.mk_message(b.get('content', ''), msg_type=typ, **kw)
+        s.changed(nm)
+        if b.get('run'): start(nm)
+        return J(id=nm.id)
+    if op == 'update':
+        if 'type' in b and b['type'] in MSG_TYPES and b['type'] != m.msg_type:
+            keep = reply(m) if m.msg_type == 'prompt' else ''
+            m.msg_type = b['type']
+            if keep and b['type'] == 'prompt': set_reply(m, keep)
+        if 'content' in b: m.content = b['content']
+        if 'reply' in b and m.msg_type == 'prompt': set_reply(m, b['reply'])
+        if 'hidden' in b: m.skipped = int(bool(b['hidden']))
+        if 'pinned' in b: m.pinned = int(bool(b['pinned']))
+        s.changed(m)
+        if b.get('run'): start(m)
+        return J(id=m.id)
+    if op == 'run':
+        start(m); return J(id=m.id)
+    if op == 'delete':
+        if m.id in s.running: return J(error='That message is running. Stop it first.')
+        s.remove(m); return J(ok=True)
+    if op == 'clear':
+        if m.msg_type == 'code' and m.id not in s.running: m.output = []; s.changed(m)
+        return J(ok=True)
+    if op == 'move':
+        ms = s.dlg.messages
+        i = ms.index(m); j = i + (1 if b.get('dir') == 'down' else -1)
+        if 0 <= j < len(ms):
+            other = ms[j]
+            s.dlg.move_msgs([m.id], **({'after': other.id} if j > i else {'before': other.id}))
+            s.save(); s.push(m); s.push(other)
+        return J(ok=True)
+    if op == 'extract':
+        blocks = fenced_blocks(reply(m))
+        after, ids = m, []
+        for code in blocks:
+            after = s.dlg.mk_message(code, msg_type='code', after=after)
+            s.changed(after); ids.append(after.id)
+        return J(ids=ids)
+    if op == 'paste':
+        after, ids = (s.dlg.msg(b['after']) if b.get('after') and s.has(b['after']) else None), []
+        for item in b.get('msgs') or []:
+            typ = item.get('type') if item.get('type') in MSG_TYPES else 'note'
+            nm = s.dlg.mk_message(item.get('content', ''), msg_type=typ, **({'after': after} if after else {}))
+            if typ == 'prompt' and item.get('reply'): set_reply(nm, item['reply'])
+            nm.skipped, nm.pinned = int(bool(item.get('hidden'))), int(bool(item.get('pinned')))
+            s.changed(nm); after = nm; ids.append(nm.id)
+        return J(ids=ids)
+    if op == 'settings':
+        st = settings(s.dlg)
+        if b.get('mode') in MODES: st['mode'] = b['mode']
+        if 'model' in b: st['model'] = str(b['model']).strip()[:200]
+        if 'dialog_tools' in b: st['dialog_tools'] = bool(b['dialog_tools'])
+        s.save(); return J(ok=True)
+    if op == 'runall': s.spawn(s.run_all()); return J(ok=True)
+    if op == 'stop': await s.interrupt(); return J(ok=True)
+    if op == 'restart': await s.restart(); return J(ok=True)
+    return J(error=f'Unknown op {op!r}')
+
+
+@rt('/d/{name}/vars')
+async def variables(name: str):
+    s = get_session(name)
+    if s is None or s.running: return J(vars={}, funcs={}, busy=True)
+    v, f = await s.kernel.user_items()
+    hide = set(dtools.NAMES) | {'tool_info'}
+    return J(vars=v, funcs={k: sig for k, sig in f.items() if k not in hide})
+
+
+@rt('/d/{name}/complete', methods=['POST'])
+async def complete(name: str, req):
+    s = get_session(name)
+    b = await req.json()
+    if s is None or s.running: return J(matches=[], start=b.get('pos', 0))
+    matches, start = await s.kernel.complete(b.get('code', ''), b.get('pos', 0))
+    return J(matches=list(matches)[:60], start=start)
+
+
+@rt('/d/{name}/export/{fmt}')
+def export(name: str, fmt: str):
+    s = get_session(name)
+    if s is None: return PlainTextResponse('No such dialog', status_code=404)
+    s.save()
+    if fmt == 'ipynb': body, typ = Path(s.dlg.path_).read_text(encoding='utf8'), 'application/x-ipynb+json'
+    elif fmt == 'md': body, typ = dlg2md(s.dlg), 'text/markdown'
+    elif fmt == 'py': body, typ = msgs2py(s.dlg.messages, full=True), 'text/x-python'
+    else: return PlainTextResponse('Unknown format', status_code=404)
+    return Response(body, media_type=typ, headers={'Content-Disposition': f'attachment; filename="{name}.{fmt}"'})
+
+
+@rt('/api/tool', methods=['POST'])
+async def api_tool(req):
+    "Dialog tools called from inside a dialog's own kernel (see polya/helper.py)."
+    if not secrets.compare_digest(req.headers.get('x-polya-token', ''), TOKEN): return JSONResponse(dict(error='Bad token'), status_code=403)
+    b = await req.json()
+    s = get_session(b.get('dialog', ''))
+    if s is None: return J(error='No such dialog')
+    try: return J(result=await dtools.call(s, 'kernel', b.get('name'), b.get('args') or {}))
+    except Exception as e: return J(error=f'{type(e).__name__}: {e}')
