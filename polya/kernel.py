@@ -21,6 +21,7 @@ class Kernel:
     def __init__(self, cwd, env, name=None):
         self.cwd, self.env = str(cwd), dict(env)
         self.name = name or os.environ.get('POLYA_KERNEL', 'py')
+        self.sidecar = self.name == 'py'   # ipymini's side channel; other kernels use the main shell
         self.km = self.kc = None
         self.busy = 0
         self._starting = asyncio.Lock()
@@ -52,7 +53,7 @@ class Kernel:
         "Tool schemas for functions `names` in the kernel namespace: {name: schema-dict | error-string}."
         if not names: return {}
         kc = await self.ensure()
-        res = await kc.get_schemas(list(names))
+        res = await kc.get_schemas(list(names), sidecar_=self.sidecar)
         return res if isinstance(res, dict) else {n: str(res) for n in names}
 
     async def user_exprs(self, exprs):
@@ -74,7 +75,7 @@ class Kernel:
     async def user_items(self):
         "(variables, functions) defined by the user, for the sidebar."
         if self.kc is None: return {}, {}
-        try: v, f = await self.kc.ipy('user_items', timeout_=5)
+        try: v, f = await self.kc.ipy('user_items', timeout_=5, sidecar_=self.sidecar)
         except Exception: return {}, {}
         return v, f
 

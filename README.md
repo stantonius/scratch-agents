@@ -126,7 +126,8 @@ rather than open source, and its built-in AI turn sends requests to `solve.it.co
   kernel-to-server tool API needs a per-run random token.
 - **Maturity of dependencies.** Several of the Answer.AI packages are young (0.0.x–0.1.x), some
   are Rust extensions, and ipymini's own README says it was largely AI-written. Pin versions and
-  have them reviewed the way you would any dependency. `POLYA_KERNEL=python3` swaps in ipykernel.
+  have them reviewed the way you would any dependency. `POLYA_KERNEL=python3` swaps in ipykernel
+  (`pip install ipykernel`); the kernel layer is checked against it, the browser suite is not.
 
 ## Not implemented (Solveit has these)
 
