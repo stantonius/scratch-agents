@@ -34,7 +34,7 @@ The tool is shaped to make that the easy path:
 | Every message is editable, **including the AI's replies**; `h` hides a message from the AI, `p` pins it | "Dialog engineering": remove dead ends instead of arguing with the model, so sessions get better over time rather than worse. |
 | Two modes: **basic** and **grill** | Basic answers one small step at a time. Grill interviews *you* about a plan, or about what some code does, before anything is written. |
 | **Ctrl+click** any name to see its definition | You can't run a cell you don't understand; this shows the source of what you imported and lets you pull it into a cell. |
-| Cells written by an AI are **marked** until you edit them | You can always tell what you wrote from what was written for you. |
+| Cells written by an AI are **marked** until you run or edit them | You can always tell what you wrote from what was written for you. |
 | Any Python function is a **tool**: mention it as ``&`name` ``; ``$`expr` `` shows the AI a value | Same tools for human and AI. You decide exactly what the AI can do. |
 | Optional **dialog tools** (`add_msg`, `update_msg`, …) | The AI can add and edit cells in the notebook when you allow it. It does not run what it wrote; you do. |
 | Optional **sandboxed `python` and `bash` tools** | The AI can look things up and check facts in your kernel without being able to reach the network, start programs or change your files. |
@@ -118,7 +118,7 @@ What the agent gets:
 
 The rules it works under:
 
-- Everything it adds is marked **added by agent** until you edit it.
+- Everything it adds is marked **added by agent** until you run or edit it.
 - It cannot edit or delete a message you wrote; the server refuses.
 - It cannot add prompts, so it cannot drive the notebook's AI.
 - Code it runs through `add_msg`/`run_msg` is **not sandboxed**. A coding agent already has its
@@ -154,6 +154,10 @@ Click a message to select it; `?` lists every shortcut.
 - **Bottom editor**: pick `code`, `note` or `prompt`, type, `Ctrl+Enter`.
 - **Selected message**: `Enter` edit · `Ctrl+Enter` run / send · `n` edit the AI's reply · `w` extract code blocks ·
   `h` hide from AI · `p` pin · `x` `c` `v` cut/copy/paste · `a` `b` add above/below · `Alt+↑/↓` move.
+- **Bulk runs**: `r` runs all code, `Shift+A` the code above the selected message, `Shift+B` the code
+  from it down. These run **code only**. Prompts are never re-sent, so saved (and edited)
+  replies stay as they are; to ask again, run that one prompt with `Ctrl+Enter`. Cells the AI
+  wrote that you have not run or edited yourself are skipped, and the count is shown.
 - **Any code**: `Ctrl`+click a name for its definition.
 - **Header**: mode (basic / grill), *AI can edit dialog*, per-dialog model, Run all, Stop, Restart, Export (`.ipynb`, `.md`, `.py`), Vars (outline + live variables).
 
@@ -277,7 +281,7 @@ drives a real browser through: run-all, streaming replies, code-block extraction
 restart, plots, completion, reordering, cut/paste and persistence. Against the sample
 project in `tests/sample_project` it also covers go-to-definition, the `SETUP` dialog,
 autoreload, both modes, the agent endpoint through an MCP client (`tests/agent_bridge.py`),
-and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
+bulk runs (no prompt is re-sent), and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
 subprocesses, writes outside `/tmp`, `curl`, `rm`), blocked calls becoming cells, and widening.
 
 **Not tested against a real model or a real coding agent**: no credentials were available

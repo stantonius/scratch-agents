@@ -400,7 +400,7 @@
       h: () => selected && act('hide', selected), p: () => selected && act('pin', selected),
       w: () => selected && typeOf(selected) === 'prompt' && act('extract', selected),
       Backspace: () => selected && act('clear', selected), Delete: () => selected && act('clear', selected),
-      r: () => post({op: 'runall'}), R: () => restart(), S: () => post({op: 'stop'}),
+      r: () => runAll('all'), A: () => runAll('above'), B: () => runAll('below'), R: () => restart(), S: () => post({op: 'stop'}),
       '/': () => composer.focus(), '?': () => { help.hidden = false; },
     };
     if (/^[1-6]$/.test(k) && selected) { e.preventDefault(); heading(selected, +k); return; }
@@ -420,11 +420,22 @@
   $('#dcode').onclick = () => insertDef(false);
   $('#dnote').onclick = () => insertDef(true);
 
+  // Bulk runs only ever run code. Prompts keep their saved replies; unreviewed AI-written cells are left alone.
+  async function runAll(scope) {
+    if (scope !== 'all' && !selected) return;
+    const r = await post({op: 'runall', scope, id: scope === 'all' ? undefined : selected});
+    if (r.error) return;
+    const what = {all: 'all', above: 'above', below: 'from here down'}[scope];
+    let msg = `Running ${r.count} code message${r.count === 1 ? '' : 's'} (${what}). Prompts are not re-sent.`;
+    if (r.skipped) msg += ` Skipped ${r.skipped} written by the AI that you have not run yourself.`;
+    toast(msg);
+  }
+
   function restart() { if (confirm('Restart the kernel? All variables will be lost.')) post({op: 'restart'}); }
 
   document.querySelectorAll('.ctype').forEach(b => b.onclick = () => { setCType(b.dataset.type); composer.focus(); });
   $('#csend').onclick = () => submit(false);
-  $('#runall').onclick = () => post({op: 'runall'});
+  $('#runall').onclick = () => runAll('all');
   $('#stop').onclick = () => post({op: 'stop'});
   $('#restart').onclick = restart;
   $('#mode').onchange = e => post({op: 'settings', mode: e.target.value});

@@ -13,4 +13,5 @@ for t in tests/e2e/0[123]_*.js; do echo "== $t"; node "$t" "$SHOTS"; done
 echo "== tests/agent_bridge.py"; python tests/agent_bridge.py "$TMP/dialogs/.polya-agent-token"
 echo "== tests/e2e/04_codebase.js"; node tests/e2e/04_codebase.js "$SHOTS" "$TMP/proj"
 echo "== tests/e2e/05_sandbox.js"; node tests/e2e/05_sandbox.js "$SHOTS"; rm -f ~/polya_written_by_ai*.txt
+echo "== tests/e2e/06_bulk_runs.js"; node tests/e2e/06_bulk_runs.js
 echo "Screenshots in $SHOTS"

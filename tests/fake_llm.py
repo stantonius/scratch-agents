@@ -65,7 +65,10 @@ async def chat(req):
 async def last(req): return JSONResponse(seen[-1] if seen else {})
 
 
-app = Starlette(routes=[Route('/seen', last), Route('/v1/chat/completions', chat, methods=['POST']), Route('/chat/completions', chat, methods=['POST'])])
+async def count(req): return JSONResponse(dict(count=len(seen)))
+
+
+app = Starlette(routes=[Route('/seen', last), Route('/count', count), Route('/v1/chat/completions', chat, methods=['POST']), Route('/chat/completions', chat, methods=['POST'])])
 
 if __name__ == '__main__':
     uvicorn.run(app, host='127.0.0.1', port=int(sys.argv[1]) if len(sys.argv) > 1 else 8765, log_level='warning')

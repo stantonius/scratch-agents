@@ -157,9 +157,24 @@ class Session:
                 self.current_id = self.cursor_id = None
                 self.changed(m)
 
-    async def run_all(self):
+    def run_plan(self, scope='all', id=None):
+        """(to_run, skipped) for Run all / above / below.
+
+        Only code messages are ever run this way. Prompts are never re-sent: their replies are part of the
+        document. Code the AI wrote that you have not run or edited yourself is skipped too, so a bulk run
+        cannot execute something you have not looked at.
+        """
+        ms = list(self.dlg.messages)
+        if scope in ('above', 'below') and id and self.has(id):
+            i = ms.index(self.dlg.msg(id))
+            ms = ms[:i] if scope == 'above' else ms[i:]     # like Jupyter: above excludes the selected cell, below includes it
+        code = [m for m in ms if m.msg_type == 'code' and (m.content or '').strip()]
+        skipped = [m for m in code if (m.meta or {}).get('polya_by') == 'ai']
+        return [m for m in code if m not in skipped], skipped
+
+    async def run_all(self, todo):
         self.stop = False
-        for m in [m for m in self.dlg.messages if m.msg_type == 'code' and (m.content or '').strip()]:
+        for m in todo:
             if self.stop or not self.has(m.id): break
             if not await self.run_code(m): break
 
@@ -286,7 +301,7 @@ HELP = [
     ('Writing', [('Enter', 'edit the selected message'), ('n', "edit the AI's reply"), ('a / b', 'new message above / below'),
                  ('Ctrl+Shift+J/K/L', 'make it code / note / prompt (or Alt+J/K/L)'), ('1 – 6', 'make a note a heading of that level'), ('Tab', 'complete code from the live kernel'), ('Ctrl+click a name', 'show where it is defined, with its source (F12 in an editor)')]),
     ('Running', [('Ctrl+Enter', 'run code, or send a prompt to the AI'), ('Shift+Enter', 'run and move to the next message'), ('Alt+Enter', 'in the bottom editor: send a prompt and stay in prompt mode'),
-                 ('r', 'run all code messages'), ('Shift+S', 'stop the running code or AI reply'), ('Shift+R', 'restart the kernel'), ('Backspace', "clear a code message's output")]),
+                 ('r', 'run all code messages (never re-sends prompts)'), ('Shift+A / Shift+B', 'run the code messages above / from here down'), ('Shift+S', 'stop the running code or AI reply'), ('Shift+R', 'restart the kernel'), ('Backspace', "clear a code message's output")]),
     ('Dialog engineering', [('w', "copy the AI's code blocks into code messages"), ('h', 'hide a message from the AI / show it again'), ('p', 'pin a message so it always stays in the AI context'),
                             ('x / c / v', 'cut / copy / paste messages (works across dialogs)'), ('Alt+↑ / Alt+↓', 'move a message up / down')]),
 ]
@@ -310,7 +325,7 @@ def dialog(name: str):
               title='Give the AI a python tool and a bash tool that run in this kernel inside a sandbox: no network, no subprocesses, writes only under /tmp, read-only shell commands. Blocked code is left as a cell for you to run.', cls='chk'),
         Label('Model', Input(id='model', value=st['model'], placeholder=os.environ.get('POLYA_MODEL') or 'default', size=16),
               title='Model name sent to your endpoint for this dialog (empty = POLYA_MODEL)'),
-        Button('Run all', id='runall', title='Run every code message from the top (r)'),
+        Button('Run all', id='runall', title='Run every code message from the top (r). Prompts are never re-sent. Shift+A / Shift+B run the code above / from the selected message down.'),
         Button('Stop', id='stop', title='Stop the running code or AI reply (Shift+S)'),
         Button('Restart', id='restart', title='Restart the kernel: all variables are lost (Shift+R)'),
         Select(Option('Export…', value=''), Option('Notebook (.ipynb)', value='ipynb'), Option('Markdown (.md)', value='md'),
@@ -382,7 +397,10 @@ async def do(name: str, req):
     if mid and m is None: return J(error='That message no longer exists')
 
     def start(msg):
-        if msg.msg_type == 'code': s.spawn(s.run_code(msg))
+        if msg.msg_type == 'code':
+            # Running a cell yourself is how you accept it: it stops being "added by AI/agent".
+            if msg.meta.pop('polya_by', None): s.save()
+            s.spawn(s.run_code(msg))
         elif msg.msg_type == 'prompt': s.spawn(s.run_prompt(msg))
 
     if op == 'add':
@@ -448,7 +466,10 @@ async def do(name: str, req):
         if 'dialog_tools' in b: st['dialog_tools'] = bool(b['dialog_tools'])
         if 'code_tools' in b: st['code_tools'] = bool(b['code_tools'])
         s.save(); return J(ok=True)
-    if op == 'runall': s.spawn(s.run_all()); return J(ok=True)
+    if op == 'runall':
+        todo, skipped = s.run_plan(b.get('scope', 'all'), mid)
+        s.spawn(s.run_all(todo))
+        return J(ok=True, count=len(todo), skipped=len(skipped))
     if op == 'stop': await s.interrupt(); return J(ok=True)
     if op == 'restart': await s.restart(); return J(ok=True)
     return J(error=f'Unknown op {op!r}')
