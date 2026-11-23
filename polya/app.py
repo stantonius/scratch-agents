@@ -298,7 +298,7 @@ def duplicate(name: str):
 
 HELP = [
     ('Moving around', [('↑ ↓  or  k j', 'select previous / next message'), ('Home / End', 'first / last message'), ('/', 'jump to the editor at the bottom'), ('Esc', 'leave an editor (saves)')]),
-    ('Writing', [('Enter', 'edit the selected message'), ('n', "edit the AI's reply"), ('a / b', 'new message above / below'),
+    ('Writing', [('Enter', 'edit the selected message'), ('n', "edit the AI's reply (an edited reply locks the prompt against re-sending)"), ('a / b', 'new message above / below'),
                  ('Ctrl+Shift+J/K/L', 'make it code / note / prompt (or Alt+J/K/L)'), ('1 – 6', 'make a note a heading of that level'), ('Tab', 'complete code from the live kernel'), ('Ctrl+click a name', 'show where it is defined, with its source (F12 in an editor)')]),
     ('Running', [('Ctrl+Enter', 'run code, or send a prompt to the AI'), ('Shift+Enter', 'run and move to the next message'), ('Alt+Enter', 'in the bottom editor: send a prompt and stay in prompt mode'),
                  ('r', 'run all code messages (never re-sends prompts)'), ('Shift+A / Shift+B', 'run the code messages above / from here down'), ('Shift+S', 'stop the running code or AI reply'), ('Shift+R', 'restart the kernel'), ('Backspace', "clear a code message's output")]),
@@ -376,7 +376,9 @@ async def events(name: str, req):
     return StreamingResponse(gen(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
-def _raw(m): return dict(id=m.id, type=m.msg_type, content=m.content or '', reply=reply(m), hidden=bool(m.skipped), pinned=bool(m.pinned))
+def _raw(m):
+    return dict(id=m.id, type=m.msg_type, content=m.content or '', reply=reply(m), hidden=bool(m.skipped), pinned=bool(m.pinned),
+                reply_edited=bool((m.meta or {}).get('polya_reply_edited')))
 
 
 @rt('/d/{name}/msg/{id}/raw')
@@ -401,7 +403,12 @@ async def do(name: str, req):
             # Running a cell yourself is how you accept it: it stops being "added by AI/agent".
             if msg.meta.pop('polya_by', None): s.save()
             s.spawn(s.run_code(msg))
-        elif msg.msg_type == 'prompt': s.spawn(s.run_prompt(msg))
+        elif msg.msg_type == 'prompt':
+            # A reply you edited by hand is yours. Re-sending the prompt would overwrite it, so it is refused.
+            if msg.meta.get('polya_reply_edited'):
+                return 'You edited this reply, so the prompt will not be re-sent. To ask again, clear the reply first (press n, delete the text, Esc), or copy the prompt into a new message.'
+            s.spawn(s.run_prompt(msg))
+        return None
 
     if op == 'add':
         typ = b.get('type', 'code')
@@ -421,14 +428,18 @@ async def do(name: str, req):
         if 'content' in b:
             if b['content'] != m.content: m.meta.pop('polya_by', None)   # you edited it: it is yours now
             m.content = b['content']
-        if 'reply' in b and m.msg_type == 'prompt': set_reply(m, b['reply'])
+        if 'reply' in b and m.msg_type == 'prompt' and b['reply'] != reply(m):
+            set_reply(m, b['reply'])
+            if b['reply'].strip(): m.meta['polya_reply_edited'] = True    # locked: see `start`
+            else: m.meta.pop('polya_reply_edited', None)                  # cleared: it can be asked again
         if 'hidden' in b: m.skipped = int(bool(b['hidden']))
         if 'pinned' in b: m.pinned = int(bool(b['pinned']))
         s.changed(m)
-        if b.get('run'): start(m)
-        return J(id=m.id)
+        err = start(m) if b.get('run') else None
+        return J(id=m.id, error=err) if err else J(id=m.id)
     if op == 'run':
-        start(m); return J(id=m.id)
+        err = start(m)
+        return J(id=m.id, error=err) if err else J(id=m.id)
     if op == 'delete':
         if m.id in s.running: return J(error='That message is running. Stop it first.')
         s.remove(m); return J(ok=True)
@@ -455,7 +466,9 @@ async def do(name: str, req):
         for item in b.get('msgs') or []:
             typ = item.get('type') if item.get('type') in MSG_TYPES else 'note'
             nm = s.dlg.mk_message(item.get('content', ''), msg_type=typ, **({'after': after} if after else {}))
-            if typ == 'prompt' and item.get('reply'): set_reply(nm, item['reply'])
+            if typ == 'prompt' and item.get('reply'):
+                set_reply(nm, item['reply'])
+                if item.get('reply_edited'): nm.meta['polya_reply_edited'] = True
             nm.skipped, nm.pinned = int(bool(item.get('hidden'))), int(bool(item.get('pinned')))
             s.changed(nm); after = nm; ids.append(nm.id)
         return J(ids=ids)

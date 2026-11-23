@@ -169,6 +169,7 @@ input, select { background: var(--panel); border: 1px solid var(--line); border-
 
 /* ---- who wrote it */
 .f-by { color: var(--prompt); }
+.f-lock { color: var(--muted); }
 .msg.by-agent, .msg.by-ai { border-style: dashed; border-left-style: solid; }
 .pill.setup { color: var(--muted); }
 .setupform { margin: 10px 0 0; }

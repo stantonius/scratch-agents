@@ -44,6 +44,25 @@ const { chromium } = require('playwright');
   await bulk('r');
   log('4 run all now includes it', await p.$eval('.toast', e => e.innerText).catch(() => ''));
   log('5 total LLM calls caused by bulk runs', (await llmCalls()) - before.calls);
+
+  // re-sending by hand: allowed for an untouched prompt, refused once its reply has been edited
+  const sendSelected = async () => { await p.$$eval('.toast', els => els.forEach(e => e.remove())); await p.keyboard.press('Control+Enter'); await p.waitForTimeout(1200); await idle(); };
+  let c0 = await llmCalls();
+  await selectNth(2); await sendSelected();
+  log('6 untouched prompt re-sent by hand', (await llmCalls()) - c0);
+  c0 = await llmCalls();
+  await selectNth(4); await sendSelected();
+  log('7 edited-reply prompt: calls, reply, flag', [(await llmCalls()) - c0, (await replies())[1], await p.$eval('#msgs > .msg:nth-child(4) .f-lock', e => e.innerText), await p.$$eval('#msgs > .msg:nth-child(4) [data-act=run]', e => e.length)]);
+  log('7 refusal shown', (await p.$eval('.toast', e => e.innerText).catch(() => '')).slice(0, 70));
+  // editing the question and pressing Ctrl+Enter in the editor is refused too, and the reply survives
+  await p.keyboard.press('Enter'); await p.waitForSelector('.editor .CodeMirror'); await p.keyboard.insertText(' (reworded)'); await p.keyboard.press('Control+Enter'); await p.waitForTimeout(1200); await idle();
+  log('8 edit question + Ctrl+Enter', [(await llmCalls()) - c0, (await replies())[1], /reworded/.test(await p.$eval('#msgs > .msg:nth-child(4) .min', e => e.innerText))]);
+  // the lock survives a reload
+  await p.reload(); await p.waitForSelector('.msg'); log('9 lock persisted', await p.$$eval('.f-lock', e => e.length));
+  // clearing the reply is the deliberate way to ask again
+  await selectNth(4); await p.keyboard.press('n'); await p.waitForSelector('.editor .CodeMirror'); await p.keyboard.press('Control+a'); await p.keyboard.press('Backspace'); await p.keyboard.press('Escape'); await p.waitForTimeout(600);
+  c0 = await llmCalls(); await selectNth(4); await sendSelected();
+  log('10 after clearing the reply', [(await llmCalls()) - c0, await p.$$eval('.f-lock', e => e.length), (await replies())[1].slice(0, 30)]);
   console.log('ERRORS', JSON.stringify(errs));
   await b.close();
 })().catch(e => { console.log('FAILED', e.message.slice(0, 700)); process.exit(1); });

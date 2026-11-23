@@ -68,7 +68,9 @@ def msg_html(m, live=None, running=False, error=''):
     "One message. `live` is the reply text while the AI is still streaming it."
     t = m.msg_type
     cls = f'msg t-{t}' + (' is-hidden' if m.skipped else '') + (' is-pinned' if m.pinned else '') + (' is-running' if running else '')
-    acts = ['run'] if t in ('code', 'prompt') else []
+    locked = t == 'prompt' and bool((m.meta or {}).get('polya_reply_edited'))
+    if locked: cls += ' is-locked'
+    acts = ['run'] if t == 'code' or (t == 'prompt' and not locked) else []
     acts += ['edit']
     if t == 'prompt': acts += ['reply', 'extract']
     acts += ['hide', 'pin', 'up', 'down', 'delete']
@@ -77,6 +79,7 @@ def msg_html(m, live=None, running=False, error=''):
     who = {'ai': ("added by AI", "Added by the notebook's AI and not edited by you since"),
            'agent': ('added by agent', 'Added by your coding agent and not edited by you since')}.get(by)
     flags = (f'<span class="flag f-by" title="{who[1]}">{who[0]}</span>' if who else '') + \
+            ('<span class="flag f-lock" title="You edited this reply, so the prompt will not be re-sent. Clear the reply to ask again.">reply edited · locked</span>' if locked else '') + \
             ('<span class="flag f-pin" title="Pinned: always in the AI context">pinned</span>' if m.pinned else '') + \
             ('<span class="flag f-hide" title="Hidden from the AI">hidden from AI</span>' if m.skipped else '')
     head = (f'<div class="mhead"><span class="badge">{t}</span>{flags}'

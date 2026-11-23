@@ -155,9 +155,12 @@ Click a message to select it; `?` lists every shortcut.
 - **Selected message**: `Enter` edit · `Ctrl+Enter` run / send · `n` edit the AI's reply · `w` extract code blocks ·
   `h` hide from AI · `p` pin · `x` `c` `v` cut/copy/paste · `a` `b` add above/below · `Alt+↑/↓` move.
 - **Bulk runs**: `r` runs all code, `Shift+A` the code above the selected message, `Shift+B` the code
-  from it down. These run **code only**. Prompts are never re-sent, so saved (and edited)
-  replies stay as they are; to ask again, run that one prompt with `Ctrl+Enter`. Cells the AI
+  from it down. These run **code only**. A prompt is never re-sent by a bulk run. Cells the AI
   wrote that you have not run or edited yourself are skipped, and the count is shown.
+- **Re-sending a prompt** is always a deliberate, single action: select it and press
+  `Ctrl+Enter`. If you have **edited its reply**, the prompt is locked (*reply edited · locked*)
+  and will not be re-sent, so your edit cannot be overwritten. To ask again on purpose, clear
+  the reply (`n`, delete the text, `Esc`) or copy the prompt into a new message.
 - **Any code**: `Ctrl`+click a name for its definition.
 - **Header**: mode (basic / grill), *AI can edit dialog*, per-dialog model, Run all, Stop, Restart, Export (`.ipynb`, `.md`, `.py`), Vars (outline + live variables).
 
@@ -281,7 +284,7 @@ drives a real browser through: run-all, streaming replies, code-block extraction
 restart, plots, completion, reordering, cut/paste and persistence. Against the sample
 project in `tests/sample_project` it also covers go-to-definition, the `SETUP` dialog,
 autoreload, both modes, the agent endpoint through an MCP client (`tests/agent_bridge.py`),
-bulk runs (no prompt is re-sent), and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
+bulk runs (no prompt is re-sent; a prompt with an edited reply is locked), and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
 subprocesses, writes outside `/tmp`, `curl`, `rm`), blocked calls becoming cells, and widening.
 
 **Not tested against a real model or a real coding agent**: no credentials were available

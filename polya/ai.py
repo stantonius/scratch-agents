@@ -176,5 +176,7 @@ async def run_turn(s, prompt, emit, stopped):
         # Keep whatever arrived, in aihist's saved-reply format. If the request failed before
         # anything arrived, leave the previous reply alone instead of wiping it.
         text = rep.finish('*(Stopped.)*' if stopped() else None).strip()
-        if text or done: set_reply(prompt, text)
+        if text or done:
+            set_reply(prompt, text)
+            prompt.meta.pop('polya_reply_edited', None)
     return notes
