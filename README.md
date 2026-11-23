@@ -36,7 +36,8 @@ The tool is shaped to make that the easy path:
 | **Ctrl+click** any name to see its definition | You can't run a cell you don't understand; this shows the source of what you imported and lets you pull it into a cell. |
 | Cells written by an AI are **marked** until you edit them | You can always tell what you wrote from what was written for you. |
 | Any Python function is a **tool**: mention it as ``&`name` ``; ``$`expr` `` shows the AI a value | Same tools for human and AI. You decide exactly what the AI can do. |
-| Optional **dialog tools** (`add_msg`, `update_msg`, `run_msg`, …) | The AI can add, edit and run cells in the notebook when you allow it. |
+| Optional **dialog tools** (`add_msg`, `update_msg`, …) | The AI can add and edit cells in the notebook when you allow it. It does not run what it wrote; you do. |
+| Optional **sandboxed `python` and `bash` tools** | The AI can look things up and check facts in your kernel without being able to reach the network, start programs or change your files. |
 
 ## Install and run
 
@@ -120,6 +121,9 @@ The rules it works under:
 - Everything it adds is marked **added by agent** until you edit it.
 - It cannot edit or delete a message you wrote; the server refuses.
 - It cannot add prompts, so it cannot drive the notebook's AI.
+- Code it runs through `add_msg`/`run_msg` is **not sandboxed**. A coding agent already has its
+  own shell on your machine, so a sandbox here would add nothing; what this route adds is that
+  you see what it ran.
 - The server sends it working instructions on connect: read the dialog first, run experiments
   as cells rather than in its own shell, keep cells small, say which files it changed.
 
@@ -170,6 +174,47 @@ The dialog tools are preloaded in every kernel, so you can use them from code as
 `run_msg`. Tick **AI can edit dialog** to give all of them to the AI, or mention individual
 ones with `&`.
 
+### What the AI can run
+
+The AI has no tools until you give it some. There are three ways, each off by default:
+
+| You do this | The AI can then | Where it runs |
+|---|---|---|
+| Mention a function with `&` | Call that function | Your kernel, unrestricted: it is your function |
+| Tick **AI can edit dialog** | Add, edit, find and delete messages | The dialog. Code it writes is **not run** unless the next box is ticked, and then only in the sandbox |
+| Tick **AI can run code** | Use a `python` tool and a `bash` tool | Your kernel, **inside a sandbox** |
+
+The sandbox is Answer.AI's [safepyrun](https://github.com/AnswerDotAI/safepyrun) and
+[safecmd](https://github.com/AnswerDotAI/safecmd), the same pair Solveit uses, with tighter
+defaults:
+
+- **`python`** sees your variables, functions and libraries, and what it defines stays defined.
+  It can read files and compute. It cannot open network connections, start subprocesses, or
+  write outside `/tmp`.
+- **`bash`** runs only allowlisted commands: read-only inspection (`ls`, `cat`, `grep`, `rg`,
+  `find`, `wc`, `diff`, `jq`, …) and read-only git (`status`, `diff`, `log`, `show`, `blame`, …).
+  Not allowed by default: `curl`, `wget`, `rm`, `pytest`, `python`, `pip`, `git commit`,
+  `git checkout`, `git push`. (safecmd's own default list, which Solveit uses, allows `curl`,
+  `git commit` and `git checkout`; this one does not.)
+- **A blocked call is not lost.** The code is put in the dialog as a cell marked *added by AI*,
+  not run. Read it; if you agree, run it yourself with `Ctrl+Enter`. Your own cells are never
+  sandboxed.
+- **Widening it is one line of your code**, in a cell or in `SETUP`:
+  `sandbox_cmds('pytest', 'curl')`, `sandbox_dirs('./scratch')`, `sandbox_allow(my_function)`.
+
+Two things to be clear about:
+
+- **It is a guard rail, not a security boundary.** Both libraries say so themselves: they stop
+  an AI that is mistaken or has been misled by something it read, not code written
+  deliberately to escape. It runs inside your kernel process, not in a container.
+- **Reading is not restricted.** The sandboxed tools can read any file your user can read.
+  With no network they cannot send it anywhere, but what they read does go to your LLM
+  endpoint as part of the conversation. Polya's own API key and agent token are removed from
+  the kernel's environment.
+
+Allowing `pytest` or `python` in `bash` effectively removes the sandbox, since the AI can
+write a file under `/tmp` and have it executed. Allow them when you accept that.
+
 ## What it is built from
 
 | Piece | Library | Role |
@@ -181,6 +226,7 @@ ones with `&`.
 | Kernel | [ipymini](https://github.com/AnswerDotAI/ipymini) + [conkernelclient](https://github.com/AnswerDotAI/conkernelclient) + ipyfuncs | One Jupyter-protocol kernel per dialog: streamed output, interrupt, completion, tool schemas |
 | Rendering | [mdhtml](https://github.com/AnswerDotAI/mdhtml), [fastpylight](https://github.com/AnswerDotAI/fastpylight) | Markdown (raw `<script>`/`<style>` render as text) and syntax highlighting |
 | Tool schemas, CLI | [fastcore](https://github.com/AnswerDotAI/fastcore) | `funccall` and `script` |
+| AI code sandbox | [safepyrun](https://github.com/AnswerDotAI/safepyrun), [safecmd](https://github.com/AnswerDotAI/safecmd) | `python` and `bash` tools for the AI |
 | Agent bridge | [mcpmini](https://github.com/AnswerDotAI/mcpmini) | MCP over HTTP at `/mcp` |
 | Grill mode | [mattpocock/skills](https://github.com/mattpocock/skills) `grilling` (MIT) | Vendored skill text |
 | Editor | CodeMirror 5 (MIT), vendored in `polya/static/vendor` | No CDN is contacted at runtime |
@@ -194,6 +240,7 @@ rather than open source, and its built-in AI turn sends requests to `solve.it.co
 - **It runs arbitrary code.** That is its job. It listens on `127.0.0.1` only by default and has
   no login. Do not pass `--host 0.0.0.0` on a shared network: anyone who can reach the port can
   run code as you.
+- **Code the AI runs** goes through the sandbox described under *What the AI can run*; read its two caveats.
 - **Outbound traffic.** The server contacts only the configured LLM endpoint. The page loads no
   external assets. Code you run in the kernel can of course reach whatever your machine can.
   (`fastllm` has code to download a model price list from GitHub if its bundled copy is missing;
@@ -229,7 +276,9 @@ drives a real browser through: run-all, streaming replies, code-block extraction
 `$` variables, AI-added-and-run cells, tools called from code, hide/pin/edit-reply, interrupt,
 restart, plots, completion, reordering, cut/paste and persistence. Against the sample
 project in `tests/sample_project` it also covers go-to-definition, the `SETUP` dialog,
-autoreload, both modes, and the agent endpoint through an MCP client (`tests/agent_bridge.py`).
+autoreload, both modes, the agent endpoint through an MCP client (`tests/agent_bridge.py`),
+and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
+subprocesses, writes outside `/tmp`, `curl`, `rm`), blocked calls becoming cells, and widening.
 
 **Not tested against a real model or a real coding agent**: no credentials were available
 where this was built. The OpenAI-compatible wire format and the MCP endpoint are exercised end

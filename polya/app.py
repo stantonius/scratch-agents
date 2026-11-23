@@ -105,6 +105,27 @@ class Session:
             self.changed(m)
         return not any(o.get('output_type') == 'error' for o in m.output or [])
 
+    async def exec_sandboxed(self, m):
+        "Run a code message the AI wrote through the kernel's sandbox, showing the result as its output."
+        m.output = []
+        self.running.add(m.id); self.push(m)
+        try: res = await self.kernel.sandbox('python', m.content)
+        except Exception as e: res = {'error': f'{type(e).__name__}: {e}'}
+        finally: self.running.discard(m.id)
+        if 'result' in res:
+            m.output = [dict(output_type='stream', name='stdout', text=res['result'] + '\n')]
+            text = res['result']
+        elif 'blocked' in res:
+            text = f"Blocked by the sandbox: {res['blocked']}"
+            m.output = [dict(output_type='error', ename='SandboxBlocked', evalue=res['blocked'],
+                             traceback=[text, 'This cell was not run. If you agree with what it does, run it yourself (Ctrl+Enter).'])]
+            text += '\nThe cell was not run. It is in the dialog for the user to review and run themselves if they agree.'
+        else:
+            text = res.get('error', 'failed')
+            m.output = [dict(output_type='error', ename='Error', evalue=text, traceback=[text])]
+        self.changed(m)
+        return text
+
     async def run_code(self, m):
         self.running.add(m.id); self.push(m)    # show it as queued straight away
         async with self.lock:
@@ -284,7 +305,9 @@ def dialog(name: str):
         Label('Mode', Select(*[Option(m, value=m, selected=(m == st['mode'])) for m in MODES], id='mode'),
               title='basic: the AI answers, one small step at a time. grill: the AI interviews you about your plan or your understanding, round by round, before anything is written.'),
         Label(Input(type='checkbox', id='dtools', checked=st['dialog_tools']), 'AI can edit dialog',
-              title='Give the AI tools to add, edit, find and run messages in this dialog', cls='chk'),
+              title='Give the AI tools to add, edit and find messages in this dialog. Code it writes is run only by you, or in the sandbox if the next box is ticked.', cls='chk'),
+        Label(Input(type='checkbox', id='ctools', checked=st['code_tools']), 'AI can run code',
+              title='Give the AI a python tool and a bash tool that run in this kernel inside a sandbox: no network, no subprocesses, writes only under /tmp, read-only shell commands. Blocked code is left as a cell for you to run.', cls='chk'),
         Label('Model', Input(id='model', value=st['model'], placeholder=os.environ.get('POLYA_MODEL') or 'default', size=16),
               title='Model name sent to your endpoint for this dialog (empty = POLYA_MODEL)'),
         Button('Run all', id='runall', title='Run every code message from the top (r)'),
@@ -423,6 +446,7 @@ async def do(name: str, req):
         if b.get('mode') in MODES: st['mode'] = b['mode']
         if 'model' in b: st['model'] = str(b['model']).strip()[:200]
         if 'dialog_tools' in b: st['dialog_tools'] = bool(b['dialog_tools'])
+        if 'code_tools' in b: st['code_tools'] = bool(b['code_tools'])
         s.save(); return J(ok=True)
     if op == 'runall': s.spawn(s.run_all()); return J(ok=True)
     if op == 'stop': await s.interrupt(); return J(ok=True)

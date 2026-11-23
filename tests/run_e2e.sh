@@ -12,4 +12,5 @@ for i in $(seq 40); do curl -sf -o /dev/null http://127.0.0.1:5001/ && break; sl
 for t in tests/e2e/0[123]_*.js; do echo "== $t"; node "$t" "$SHOTS"; done
 echo "== tests/agent_bridge.py"; python tests/agent_bridge.py "$TMP/dialogs/.polya-agent-token"
 echo "== tests/e2e/04_codebase.js"; node tests/e2e/04_codebase.js "$SHOTS" "$TMP/proj"
+echo "== tests/e2e/05_sandbox.js"; node tests/e2e/05_sandbox.js "$SHOTS"; rm -f ~/polya_written_by_ai*.txt
 echo "Screenshots in $SHOTS"

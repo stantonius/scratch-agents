@@ -13,7 +13,7 @@ RESULT_LIMIT = 5000
 STARTUP = """
 import ipyfuncs
 from polya.helper import *
-from polya.helper import _call_tool as __polya_call, _definition as __polya_def
+from polya.helper import _call_tool as __polya_call, _definition as __polya_def, _sandbox_run as __polya_sbx
 """
 
 
@@ -36,7 +36,9 @@ class Kernel:
             if self.kc is not None and await self.km.is_alive(): return self.kc
             await self._close()
             km = ConKernelManager(kernel_name=self.name)
-            await km.start_kernel(cwd=self.cwd, env={**os.environ, **self.env})
+            # The kernel does not need Polya's own credentials, and code running in it could read them.
+            base = {k: v for k, v in os.environ.items() if k not in ('POLYA_API_KEY', 'POLYA_AGENT_TOKEN')}
+            await km.start_kernel(cwd=self.cwd, env={**base, **self.env})
             kc = await km.client().start_channels()
             await kc.exec_ok(STARTUP, store_history=False, timeout=60)
             errs = []
@@ -86,6 +88,16 @@ class Kernel:
         try: v, f = await self.kc.ipy('user_items', timeout_=5, sidecar_=self.sidecar)
         except Exception: return {}, {}
         return v, f
+
+    async def sandbox(self, kind, code):
+        "Run the AI's `code` ('python' or 'bash') in the kernel's sandbox: {'result'|'blocked'|'error': text}."
+        kc = await self.ensure()
+        self.busy += 1
+        try: res = await kc.eval('__polya_sbx', kind, code, timeout_=3600)
+        finally: self.busy -= 1
+        if isinstance(res, dict): return res
+        lines = [l for l in str(res).strip().splitlines() if l.strip()]
+        return {'error': lines[-1] if lines else 'The sandbox call failed.'}
 
     async def definition(self, name, ctx=''):
         "Where `name` is defined and its source (see `polya.helper._definition`), or {'error': ...}."

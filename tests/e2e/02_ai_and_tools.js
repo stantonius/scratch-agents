@@ -29,11 +29,13 @@ const out = process.argv[2];
   log('2 system prompt sent', /dialog-based notebook/.test(JSON.stringify(seen.messages[0])));
   await p.screenshot({ path: out + '/03-tool.png' });
 
-  // 3. AI injects a code cell and runs it
+  // 3. AI adds a code cell. Without "AI can run code" it is NOT run: the human runs it.
   await p.check('#dtools');
   await type('prompt', 'Please add it [[call add_msg {"content": "print(\'injected by AI\', 6*7)", "msg_type": "code", "run": true}]]');
-  await p.waitForFunction(() => /injected by AI 42/.test(document.querySelector('#msgs').innerText), null, { timeout: 30000 }); await idle();
-  const tail = await p.$$eval('#msgs > .msg', els => els.slice(-2).map(e => [e.dataset.type, e.querySelector('.min').innerText.slice(0, 50), e.querySelector('.mout').innerText.replace(/\s+/g, ' ').slice(0, 130)])); log('3 tail', tail);
+  await p.waitForFunction(() => /NOT run/.test(document.querySelector('#msgs').innerText), null, { timeout: 30000 }); await idle();
+  const tail = await p.$$eval('#msgs > .msg', els => els.slice(-1).map(e => [e.dataset.type, e.className.includes('by-ai'), e.querySelector('.min').innerText.slice(0, 50), e.querySelector('.mout').innerText.trim()])); log('3 AI cell added, not run', tail);
+  await p.click('#msgs > .msg:last-child .mhead'); await p.keyboard.press('Control+Enter'); await p.waitForTimeout(400); await idle();
+  log('3 after the human runs it', await p.$eval('#msgs > .msg:last-child .mout', e => e.innerText.trim()));
 
   // 4. the same tool, called by the human from code
   await type('code', "add_msg('hello from code', 'note')"); await p.waitForTimeout(500); await idle();

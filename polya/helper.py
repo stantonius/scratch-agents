@@ -9,7 +9,7 @@ import json, os, urllib.error, urllib.request
 from fastcore.funccall import call_func
 
 DIALOG_TOOLS = ['add_msg', 'update_msg', 'del_msg', 'read_msg', 'find_msgs', 'view_dlg', 'run_msg', 'msg_str_replace']
-__all__ = DIALOG_TOOLS + ['tool_info', 'source_of']
+__all__ = DIALOG_TOOLS + ['tool_info', 'source_of', 'sandbox_dirs', 'sandbox_cmds', 'sandbox_allow']
 
 
 def _api(name, **args):
@@ -159,3 +159,70 @@ def source_of(
     head = f"# {d['qualname']}{d['signature']}  --  {d['file'] or 'no file'}:{d['line']}"
     body = d['source'] or d['note']
     return head + '\n' + (body if len(body) <= 12000 else body[:12000] + '\n# ... truncated ...')
+
+
+# ---------------------------------------------------------------- the sandbox for the AI's own code
+# When "AI can run code" is on, the AI gets a `python` tool and a `bash` tool. Both run here, in this
+# kernel, so they see your variables and libraries -- but through Answer.AI's safepyrun and safecmd:
+#   python: no network, no subprocesses, writes only under the folders below
+#   bash:   only the commands below, output redirects only to the folders below
+# These guard against an AI that is mistaken or misled. They are not a security boundary against
+# code written to escape them. Widen them from your SETUP dialog with the three functions below.
+SANDBOX_CMDS = """cat, head, tail, ls, tree, grep, rg, fgrep, egrep, cut, sort, uniq, wc, tr, column, file, stat, du, df, which, type,
+diff, cmp, comm, date, whoami, hostname, uname, echo, printf, seq, basename, dirname, realpath, jq, fd,
+git blame, git branch, git cat-file, git describe, git diff, git log, git ls-files, git ls-tree, git merge-base, git remote,
+git rev-parse, git shortlog, git show, git stash list, git status, git tag,
+xargs:exec=$0, tee:dest=$0, find:-delete|-ok|-okdir:exec=-exec|-execdir, rg:--pre, cd, pwd, test, [, true, false"""
+_sbx = dict(py=None, dirs=['/tmp'], cmds=SANDBOX_CMDS)
+
+
+def sandbox_dirs(*paths: str) -> list:
+    "Also let the AI's sandboxed tools write under these folders (it can always write under /tmp). Returns the full list."
+    for p in paths:
+        p = os.path.abspath(os.path.expanduser(p))
+        if p not in _sbx['dirs']: _sbx['dirs'].append(p)
+    _sbx['py'] = None
+    return list(_sbx['dirs'])
+
+
+def sandbox_cmds(*cmds: str) -> str:
+    "Also let the AI's `bash` tool run these commands, e.g. sandbox_cmds('pytest', 'curl'). Returns the full allowlist."
+    for c in cmds:
+        if c.strip(): _sbx['cmds'] += ', ' + c.strip()
+    return _sbx['cmds']
+
+
+def sandbox_allow(*args):
+    "Trust these callables inside the AI's `python` tool, so they may use the network, subprocesses or files (see safepyrun's `allow`)."
+    from pyskills import allow
+    return allow(*args)
+
+
+async def _sandbox_run(kind, code):
+    "Run the AI's `code` in the sandbox: {'result': text}, {'blocked': reason} or {'error': text}."
+    import asyncio, contextlib, io
+    lim = 6000
+    try:
+        if kind == 'bash':
+            import safecmd
+            rc, out = await asyncio.wait_for(asyncio.to_thread(
+                safecmd.safe_run, code, cmds=_sbx['cmds'], dests=', '.join(_sbx['dirs'] + ['/dev/null']), ignore_ex=True), 300)
+            text = (out or '').rstrip() + ('' if rc == 0 else f'\n[exit code {rc}]')
+        else:
+            if _sbx['py'] is None:
+                from IPython import get_ipython
+                from safepyrun import RunPython
+                _sbx['py'] = RunPython(g=get_ipython().user_ns, ok_dests=list(_sbx['dirs']))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf): res = await _sbx['py'](code)
+            text = buf.getvalue() + ('' if res is None else repr(res))
+        text = text.strip() or '(no output)'
+        return dict(result=text if len(text) <= lim else text[:lim] + f'… [truncated, {len(text) - lim} more chars]')
+    except PermissionError as e: return dict(blocked=str(e).split('\nCall chain')[0][:400])
+    except asyncio.TimeoutError: return dict(error='Timed out after 300 seconds.')
+    except Exception as e:
+        if type(e).__name__ in ('DisallowedCmd', 'DisallowedDest'):
+            what = 'command is not on the allowlist' if type(e).__name__ == 'DisallowedCmd' else 'output destination is not an allowed folder'
+            return dict(blocked=f'{what}: {e}')
+        import traceback
+        return dict(error=''.join(traceback.format_exception_only(type(e), e)).strip()[:2000])

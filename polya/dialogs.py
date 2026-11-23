@@ -22,6 +22,7 @@ def settings(dlg):
     if s.get('mode') not in MODES: s['mode'] = 'basic'
     s.setdefault('model', '')
     s.setdefault('dialog_tools', False)
+    s.setdefault('code_tools', False)
     return s
 
 
@@ -58,6 +59,7 @@ Edit and test it like any dialog. Changes apply to other dialogs the next time t
     ('code', "# Pick up edits to the project's files without restarting the kernel\n%load_ext autoreload\n%autoreload 2"),
     ('note', "## About this project\n\n*(Replace this: what the codebase does, the main packages, naming conventions, how tests are run.)*"),
     ('code', "# Stand-ins for things you can't reach from here. For example:\n# import os\n# os.environ['DATABASE_URL'] = 'sqlite:///:memory:'"),
+    ('code', "# What the AI's sandboxed tools may do beyond the defaults (see 'AI can run code'). For example:\n# sandbox_cmds('pytest')          # let its bash tool run the tests\n# sandbox_dirs('./scratch')       # let it write under this folder as well as /tmp\n# sandbox_allow(my_fetch_docs)    # trust one of your functions to use the network"),
 ]
 
 
@@ -145,9 +147,11 @@ Write a function with type hints and a docstring, then mention it in any message
     ('prompt', "Use &`total_distance` on the two sorted columns of $`x` and tell me the result."),
     ('note', """## 5. Let the AI work *in* the dialog
 
-Tick **AI can edit dialog** in the header and the AI gets tools to add, edit, find and run messages (`add_msg`, `update_msg`, `run_msg`, …). They are ordinary functions that you can call from code too — try `add_msg('hello from code', 'note')` in a code message.
+Tick **AI can edit dialog** in the header and the AI gets tools to add, edit and find messages (`add_msg`, `update_msg`, `find_msgs`, …). They are ordinary functions that you can call from code too — try `add_msg('hello from code', 'note')` in a code message. Cells the AI writes are marked *added by AI*, and it does not run them: you do.
 
-Use it for chores — *"add a heading above each step"*, *"put that function in a code message and run it"* — while you stay the one who decides what the next step is."""),
+Tick **AI can run code** and the AI also gets a `python` tool and a `bash` tool that run in your kernel inside a sandbox: it can read, compute and call your functions, but it has no network, cannot start programs, can write only under `/tmp`, and its shell commands are read-only. Anything the sandbox blocks is left as a cell for you to read and run yourself if you agree.
+
+Use these for chores — *"add a heading above each step"*, *"check which files import this module"* — while you stay the one who decides what the next step is."""),
     ('note', """## 6. Working on real code
 
 - **See where a name comes from**: hold `Ctrl` and click any name in a code message. You get its source, file and line; `Ctrl`+click inside that source to keep following it. *Insert as code* copies the definition into a cell you can run and change line by line.

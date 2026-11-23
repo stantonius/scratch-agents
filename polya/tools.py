@@ -6,7 +6,7 @@ from, and what you call from a code message). Both routes end up here, acting on
 from fastcore.funccall import get_schema
 
 from . import helper
-from .dialogs import MSG_TYPES, reply
+from .dialogs import MSG_TYPES, reply, settings
 
 NAMES = list(helper.DIALOG_TOOLS)
 OWN_ONLY = ('update_msg', 'del_msg', 'msg_str_replace')   # an outside agent may change only what it wrote itself
@@ -40,7 +40,9 @@ async def update_msg(s, origin, id, content=None, msg_type=None, hidden=None, pi
     if msg_type is not None:
         if msg_type not in MSG_TYPES: raise ValueError(f'msg_type must be one of {MSG_TYPES}')
         if msg_type != m.msg_type: m.msg_type = msg_type
-    if content is not None: m.content = content
+    if content is not None and content != m.content:
+        m.content = content
+        if origin in ('ai', 'agent'): m.meta['polya_by'] = origin   # it is no longer what you wrote
     if hidden is not None: m.skipped = int(bool(hidden))
     if pinned is not None: m.pinned = int(bool(pinned))
     s.changed(m)
@@ -75,6 +77,7 @@ async def msg_str_replace(s, origin, id, old_str, new_str):
     n = m.content.count(old_str)
     if n != 1: raise ValueError(f'old_str occurs {n} times in message {id}; it must occur exactly once.')
     diff = m.str_replace(old_str, new_str)
+    if origin in ('ai', 'agent'): m.meta['polya_by'] = origin
     s.changed(m)
     return str(diff)
 
@@ -86,8 +89,16 @@ async def run_msg(s, origin, id):
         # Called from a running code message: the kernel is busy with that cell, so run this one afterwards.
         s.queue_run(m)
         return f'Message {id} is queued and will run when the current message finishes.'
-    if origin == 'agent': await s.run_code(m)    # from outside: wait its turn like any other run
-    else: await s.exec_code(m)                   # the notebook's own AI, already inside its turn
+    if origin == 'agent':
+        await s.run_code(m)    # from outside: wait its turn like any other run
+        return m.ai_output or '(no output)'
+    if (m.meta or {}).get('polya_by') == 'ai':
+        # Code the notebook's AI wrote never runs unsandboxed on its say-so.
+        if not settings(s.dlg)['code_tools']:
+            return (f'Message {id} was written by you, so it was NOT run: the user has to run it themselves, or turn on '
+                    '"AI can run code" to let you run code in the sandbox. Tell the user it is there for them to review.')
+        return await s.exec_sandboxed(m)
+    await s.exec_code(m)       # a cell the user wrote, unchanged: running it is running their code
     return m.ai_output or '(no output)'
 
 

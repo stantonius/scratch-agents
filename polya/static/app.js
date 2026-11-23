@@ -429,6 +429,7 @@
   $('#restart').onclick = restart;
   $('#mode').onchange = e => post({op: 'settings', mode: e.target.value});
   $('#dtools').onchange = e => post({op: 'settings', dialog_tools: e.target.checked});
+  $('#ctools').onchange = e => post({op: 'settings', code_tools: e.target.checked});
   $('#model').onchange = e => post({op: 'settings', model: e.target.value});
   $('#export').onchange = e => { if (e.target.value) location.href = `${base}/export/${e.target.value}`; e.target.value = ''; };
   $('#helpbtn').onclick = () => { $('#help').hidden = false; };

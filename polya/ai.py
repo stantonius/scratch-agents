@@ -70,11 +70,28 @@ TOOLS_SP = """You have tools. They are Python functions that the user chose to g
 - Messages you add appear right after the current prompt, in the order you add them."""
 
 
-def system_prompt(mode, has_tools, folder=None, notes=''):
+SANDBOX_TOOLS = [
+    {'type': 'function', 'function': dict(
+        name='python', description="Run Python code in the user's live kernel, inside a sandbox, and get back what it printed and the value of its last expression. "
+        "It sees the user's variables, functions and installed libraries, and names it defines stay defined.",
+        parameters=dict(type='object', properties={'code': {'type': 'string', 'description': 'Python source. End with an expression to see its value.'}}, required=['code']))},
+    {'type': 'function', 'function': dict(
+        name='bash', description="Run a read-only shell command line in the user's project folder (inspection commands such as ls, cat, grep, rg, find, wc, diff, and read-only git such as git status, git diff, git log) and get back its output.",
+        parameters=dict(type='object', properties={'cmd': {'type': 'string', 'description': 'One bash command line. Pipes are fine.'}}, required=['cmd']))},
+]
+
+SANDBOX_SP = """The `python` and `bash` tools run inside a sandbox in the user's kernel:
+- `python` cannot use the network or start subprocesses, and can write files only under folders the user approved (/tmp by default). Reading files, computing, and calling the user's own functions and libraries all work.
+- `bash` runs only allowlisted commands, which by default are read-only.
+- If a call is blocked, the code is left in the dialog as a cell for the user to review and run themselves. Do not look for another way to do the blocked thing: say what you wanted to do and why, and stop.
+- Prefer these tools for looking things up and checking facts. Code that is the user's next step still belongs in a fenced block for them to run."""
+
+
+def system_prompt(mode, has_tools, folder=None, notes='', sandbox=False):
     sp = BASE_SP
     if notes: sp += '\n\nStanding notes from the user about this project (they apply to every dialog):\n<project-notes>\n' + notes[:20000] + '\n</project-notes>'
     if mode == 'grill': sp += '\n\n' + grill_prompt(folder)
-    return sp + ('\n\n' + TOOLS_SP if has_tools else '')
+    return sp + ('\n\n' + TOOLS_SP if has_tools else '') + ('\n\n' + SANDBOX_SP if sandbox else '')
 
 
 def model_cfg(dlg):
@@ -88,6 +105,22 @@ def model_cfg(dlg):
 def model_info(): return dict(input_modalities=['text'], max_input_tokens=int(os.environ.get('POLYA_CTX_TOKENS', 200_000)))
 
 
+async def sandbox_call(s, kind, args):
+    "One `python` or `bash` call from the AI. A blocked call becomes a cell the user can read and run by hand."
+    code = str(args.get('code' if kind == 'python' else 'cmd') or '')
+    if not code.strip(): return 'Error: nothing to run.'
+    res = await s.kernel.sandbox(kind, code)
+    if 'result' in res: return res['result']
+    if 'error' in res: return 'Error: ' + res['error']
+    cell = code if kind == 'python' else '%%bash\n' + code
+    anchor = s.cursor_id or s.current_id
+    m = s.dlg.mk_message(cell, msg_type='code', meta={'polya_by': 'ai'}, **({'after': s.dlg.msg(anchor)} if anchor and s.has(anchor) else {}))
+    s.cursor_id = m.id
+    s.changed(m)
+    return (f"BLOCKED by the sandbox: {res['blocked']}\nNothing was run. The code is now in the dialog as message {m.id} for the user to "
+            "review and run themselves if they agree. Do not try another route: tell the user what you wanted to do and why, then stop.")
+
+
 async def run_turn(s, prompt, emit, stopped):
     "Answer `prompt` in session `s`, streaming the reply into the message. `emit(text)` shows progress."
     dlg, info = s.dlg, model_info()
@@ -95,7 +128,9 @@ async def run_turn(s, prompt, emit, stopped):
     kernel_names = [n for n in refs.get('tools') or [] if n not in dtools.NAMES]
     dialog_names = dtools.NAMES if settings(dlg)['dialog_tools'] else [n for n in refs.get('tools') or [] if n in dtools.NAMES]
 
-    tools, notes = dtools.schemas(dialog_names), []
+    sandbox = bool(settings(dlg)['code_tools'])
+    tools, notes = dtools.schemas(dialog_names) + (SANDBOX_TOOLS if sandbox else []), []
+    kernel_names = [n for n in kernel_names if not (sandbox and n in ('python', 'bash'))]
     for nm, sch in (await s.kernel.schemas(kernel_names)).items():
         if isinstance(sch, dict): tools.append(sch)
         else: notes.append(f'Tool `{nm}` is not available: {sch} It must be defined in the kernel with type hints and a docstring.')
@@ -103,7 +138,7 @@ async def run_turn(s, prompt, emit, stopped):
 
     items = build(dlg, prompt.id, info, vars=recs) if recs else build(dlg, prompt.id, info)
     msgs, _ = response_input(items)
-    system = system_prompt(settings(dlg)['mode'], bool(tools), s.folder, s.project_notes())
+    system = system_prompt(settings(dlg)['mode'], bool(tools), s.folder, s.project_notes(), sandbox)
     if notes: system += '\n\nNote for this turn: ' + ' '.join(notes)
     kw = dict(stream=True, system=system, max_tokens=int(os.environ.get('POLYA_MAX_TOKENS', 4096)), **model_cfg(dlg))
     if tools: kw['tools'] = tools
@@ -126,7 +161,8 @@ async def run_turn(s, prompt, emit, stopped):
                 else:
                     try:
                         name = tc.name.replace('-', '.')
-                        if name in dialog_names: text = str(await dtools.call(s, 'ai', name, tc.arguments or {}))
+                        if sandbox and name in ('python', 'bash'): text = await sandbox_call(s, name, tc.arguments or {})
+                        elif name in dialog_names: text = str(await dtools.call(s, 'ai', name, tc.arguments or {}))
                         else: text = await s.kernel.call(name, tc.arguments or {})
                     except Exception as e: text = f'Error: {type(e).__name__}: {e}'
                 r = ToolResult(id=tc.id, name=tc.name, text=text)
