@@ -100,6 +100,19 @@ const proj = process.argv[2], shots = process.argv[3];
   must(pf.indexOf('import math') >= 0 && pf.indexOf('import math') < pf.findIndex(l => l.startsWith('TAX')) && pf.filter(l => l === 'import math').length === 1, 'import moved to the top of the file, once');
   log('11 cell now holds just the function, in sync', [(await p.$eval(cellOf('discount') + ' .min', e => e.innerText)).split('\n')[0], (await linked()).filter(l => /discount/.test(l))]);
 
+  // a property setter is the second definition of its name: address it as name#2, run it from its cell, write it back
+  await type('code', 'from acme.account import Account\nacct = Account()\nadd_source("Account.balance#2", file="acme/account.py")');
+  await p.waitForSelector(cellOf('Account.balance#2'));
+  log('12 setter linked on its own', [(await linked()).filter(l => /Account/.test(l)), (await p.$eval(cellOf('Account.balance#2') + ' .min', e => e.innerText)).split('\n')[0]]);
+  must((await p.$eval(cellOf('Account.balance#2') + ' .min', e => e.innerText)).startsWith('@balance.setter'), 'the #2 link is the setter, not the getter');
+  await editCell(cellOf('Account.balance#2'), 'self._balance = value', 'self._balance = value * 100');
+  await type('code', 'acct.balance = 5\nacct.balance'); log('12 edited setter runs from its cell', await lastOut());
+  must((await lastOut()) === '500', 'a property setter edited in its cell takes effect in memory');
+  await p.click('#chgbtn'); await p.waitForSelector('#modal:not([hidden]) .chglist'); await p.click('#modal button.primary'); await p.waitForFunction(() => /match their files/.test(document.querySelector('#mbox').innerText)); await p.click('#modal .mbtns button:last-child');
+  const acc = read('acme/account.py');
+  log('12 only the setter changed in the file', [/return self\._balance\n/.test(acc), /self\._balance = value \* 100/.test(acc), (acc.match(/def balance/g) || []).length]);
+  must(/@property\n    def balance\(self\):\n        return self\._balance\n/.test(acc) && /self\._balance = value \* 100/.test(acc) && (acc.match(/def balance/g) || []).length === 2, 'the getter is untouched and the setter is written');
+
   // the notebook's AI brings code in by name; Polya does the copying
   await p.check('#dtools');
   await type('prompt', 'show me [[call add_source {"symbol": "Order.subtotal", "file": "acme/orders.py"}]]');

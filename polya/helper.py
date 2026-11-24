@@ -329,15 +329,19 @@ def _run_in_module(module, qualname, code):
     code = textwrap.dedent(code)
     fname = f'<polya {module}:{qualname}>'
     linecache.cache[fname] = (len(code), None, code.splitlines(True), fname)   # so tracebacks show these lines
-    made = {}
-    exec(compile(code, fname, 'exec'), mod.__dict__, made)
+    *owner, _ = qualname.split('.')
+    holder = mod
+    for part in owner: holder = getattr(holder, part)
+    # A method's cell runs with its class's own names in scope, as they are inside the class body. That is what lets
+    # `@balance.setter` find the `balance` property, or a method use a decorator defined on the class.
+    before = dict(vars(holder)) if owner else {}
+    scope = dict(before)
+    exec(compile(code, fname, 'exec'), mod.__dict__, scope)
+    made = {k: v for k, v in scope.items() if k not in before or before[k] is not v}      # only what this cell (re)defined
     defs = {k: v for k, v in made.items() if callable(v) or isinstance(v, (property, staticmethod, classmethod))}
     if not defs:
         mod.__dict__.update(made)
         return f'Ran in {module} (memory only). It defined no function or class.'
-    *owner, _ = qualname.split('.')
-    holder = mod
-    for part in owner: holder = getattr(holder, part)
     # Every loaded copy of the thing being replaced. Usually there is one. After autoreload has patched a module
     # there can be two: the module's, and an older object that other files imported and still call.
     holders = [holder] + [c for c in _loaded_copies(module, '.'.join(owner)) if c is not holder] if owner else [mod]
@@ -345,6 +349,8 @@ def _run_in_module(module, qualname, code):
     for name, new in defs.items():
         olds = [h.__dict__.get(name) for h in holders] + ([] if owner else _loaded_copies(module, name))
         olds = list({id(o): o for o in olds if o is not None and type(o) is type(new)}.values())
+        # A property that gains a part it did not have (a setter or deleter) cannot be patched in place: swap it in.
+        if isinstance(new, property) and any(getattr(new, a) is not None and getattr(o, a) is None for o in olds for a in ('fget', 'fset', 'fdel')): olds = []
         for old in olds:
             try: update_generic(old, new)      # same trick as autoreload: callers keep their reference, the behaviour changes
             except Exception: olds = []

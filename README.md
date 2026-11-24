@@ -103,8 +103,9 @@ follows from that link, and none of it uses a model.
 constants and helpers, and the definition it produces replaces the loaded one in place, so
 every caller in the package uses your version straight away — including callers in other
 files. That is what makes "change it and see what happens" work across a flow. It is memory
-only; the file is untouched. Two limits: a method that calls `super()` with no arguments, and a
-property setter on its own (`@x.setter`), only work once written to the file.
+only; the file is untouched. A method's cell runs with its class's names in scope, so a
+property setter (`@x.setter`) works on its own. One limit: a method that calls `super()` with
+no arguments only works once it is written to the file.
 
 **Tracking.** Each linked cell shows its file, name and one of:
 
