@@ -103,8 +103,8 @@ follows from that link, and none of it uses a model.
 constants and helpers, and the definition it produces replaces the loaded one in place, so
 every caller in the package uses your version straight away — including callers in other
 files. That is what makes "change it and see what happens" work across a flow. It is memory
-only; the file is untouched. (One limit: a method that calls `super()` with no arguments only
-works once it is written to the file.)
+only; the file is untouched. Two limits: a method that calls `super()` with no arguments, and a
+property setter on its own (`@x.setter`), only work once written to the file.
 
 **Tracking.** Each linked cell shows its file, name and one of:
 
@@ -126,6 +126,15 @@ works once it is written to the file.)
   sides and choose to overwrite or revert.
 - Only files inside `--project` can be written. Library code can be brought in to read and
   experiment with, but not written.
+- **Only that function's lines change.** Every other byte of the file is left alone: its line
+  endings (new lines use the file's own, so a Windows-style file stays that way), its encoding
+  and byte-order mark, tabs versus spaces, trailing whitespace on other lines, and whether the
+  file ends with a newline.
+- A cell written to a file must hold exactly one function or class (imports may come first).
+  Anything else is refused with a message, as is any write that would leave the file
+  unparseable.
+- When a name is defined more than once in a file (a property and its setter, `@overload`
+  stubs, alternatives under `if`/`else`), the later ones are addressed as `name#2`, `name#3`.
 
 **New code needs a destination.** `→ file…` on an unlinked code cell asks for the file and the
 position: after a named function, after a method (which puts it inside that class, indented),
@@ -387,7 +396,9 @@ autoreload, both modes, the agent endpoint through an MCP client (`tests/agent_b
 bulk runs (no prompt is re-sent; a prompt with an edited reply is locked), editing another dialog (and the refusals: running code there, changing `SETUP`), and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
 subprocesses, writes outside `/tmp`, `curl`, `rm`), blocked calls becoming cells, and widening.
 
-The round trip (`tests/e2e/08_roundtrip.js`) covers bringing code in, running it inside its
+`tests/test_source.py` (no server needed: `python tests/test_source.py`) holds 28 edge cases for
+write-back: line endings, encodings, tabs, decorators, duplicate names, definitions under
+`if`/`try`, imports, new code, and every refusal. The round trip (`tests/e2e/08_roundtrip.js`) covers bringing code in, running it inside its
 module with autoreload on, every status, diff, write-back, revert, conflicts, new functions
 and methods, and imports. Every test checks what it observes: each printed value has an expected value, and a run fails
 if any check is wrong, if a value is printed without a check, or if the browser console

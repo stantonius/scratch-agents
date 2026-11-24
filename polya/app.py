@@ -102,9 +102,10 @@ class Session:
         "What actually gets sent to the kernel for `m`: a linked cell runs inside its own module."
         src = (m.meta or {}).get('polya_src')
         if not src or not src.get('module'): return m.content
-        qual = src.get('qualname') or ''
+        qual = (src.get('qualname') or '').split('#')[0]     # `name#2` addresses a second definition of the same name
         if src.get('kind') == 'new':
-            owner = src['after'].rsplit('.', 1)[0] + '.' if '.' in (src.get('after') or '') else ''
+            after = (src.get('after') or '').split('#')[0]
+            owner = after.rsplit('.', 1)[0] + '.' if '.' in after else ''
             qual = owner + (so.def_name(m.content) or 'new')
         return f"__polya_inmod({src['module']!r}, {qual!r}, {m.content!r})"
 
