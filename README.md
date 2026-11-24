@@ -367,7 +367,10 @@ bulk runs (no prompt is re-sent; a prompt with an edited reply is locked), editi
 subprocesses, writes outside `/tmp`, `curl`, `rm`), blocked calls becoming cells, and widening.
 
 The round trip (`tests/e2e/08_roundtrip.js`) covers bringing code in, running it inside its
-module, every status, diff, write-back, revert, conflicts, and new functions and methods.
+module with autoreload on, every status, diff, write-back, revert, conflicts, new functions
+and methods, and imports. It is the only test that asserts its results; the others print what
+happened and fail only on a crash or timeout, so read their output rather than trusting the
+exit code.
 
 **Not tested against a real model or a real coding agent**: no credentials were available
 where this was built. The OpenAI-compatible wire format and the MCP endpoint are exercised end

@@ -261,6 +261,36 @@ async def _sandbox_run(kind, code):
 
 
 # ---------------------------------------------------------------- running a linked cell inside its module
+def _loaded_copies(module, qualname):
+    "Every function or class object in the loaded program that is `module`'s `qualname`, wherever it is referenced from."
+    import inspect, sys
+    from IPython import get_ipython
+    found = {}
+    for d in [getattr(m, '__dict__', None) for m in list(sys.modules.values())] + [get_ipython().user_ns]:
+        if not isinstance(d, dict): continue
+        for v in list(d.values()):
+            if (inspect.isfunction(v) or inspect.isclass(v)) and getattr(v, '__module__', None) == module and getattr(v, '__qualname__', None) == qualname:
+                found[id(v)] = v
+    return list(found.values())
+
+
+def _module_namespaces(mod):
+    "Every globals dict in use by `mod`'s functions and methods: normally just the module's own, plus stale copies."
+    import inspect
+    seen = {id(mod.__dict__): mod.__dict__}
+
+    def note(f):
+        f = getattr(f, '__func__', f)
+        f = getattr(f, 'fget', f) if isinstance(f, property) else f
+        g = getattr(f, '__globals__', None)
+        if isinstance(g, dict) and g.get('__name__') == mod.__name__: seen.setdefault(id(g), g)
+    for v in list(mod.__dict__.values()):
+        if inspect.isfunction(v): note(v)
+        elif inspect.isclass(v) and v.__module__ == mod.__name__:
+            for m in list(vars(v).values()): note(m)
+    return list(seen.values())
+
+
 def _run_in_module(module, qualname, code):
     """Run a cell that is linked to `module`'s `qualname` as if it were still in that file.
 
@@ -285,18 +315,26 @@ def _run_in_module(module, qualname, code):
     *owner, _ = qualname.split('.')
     holder = mod
     for part in owner: holder = getattr(holder, part)
-    notes = []
+    # Every loaded copy of the thing being replaced. Usually there is one. After autoreload has patched a module
+    # there can be two: the module's, and an older object that other files imported and still call.
+    holders = [holder] + [c for c in _loaded_copies(module, '.'.join(owner)) if c is not holder] if owner else [mod]
+    notes, bound, spaces = [], {k: v for k, v in made.items() if k not in defs}, _module_namespaces(mod)
     for name, new in defs.items():
-        old = holder.__dict__.get(name) if owner else mod.__dict__.get(name)
-        if old is not None and type(old) is type(new):
-            try: update_generic(old, new)          # same trick as autoreload: callers keep their reference, the behaviour changes
-            except Exception: old = None
-        if old is None or type(old) is not type(new):
-            setattr(holder, name, new)
+        olds = [h.__dict__.get(name) for h in holders] + ([] if owner else _loaded_copies(module, name))
+        olds = list({id(o): o for o in olds if o is not None and type(o) is type(new)}.values())
+        for old in olds:
+            try: update_generic(old, new)      # same trick as autoreload: callers keep their reference, the behaviour changes
+            except Exception: olds = []
+            g = getattr(getattr(old, '__func__', old), '__globals__', None)
+            if isinstance(g, dict) and all(g is not sp for sp in spaces): spaces.append(g)
+        if not olds:
+            for h in holders: setattr(h, name, new)
             if 'super()' in code and owner: notes.append(f'{name} uses super() with no arguments, which only works once it is written to the file')
-        if not owner: get_ipython().user_ns[name] = getattr(mod, name)
-    for k, v in made.items():
-        if k not in defs: mod.__dict__[k] = v
+        if not owner:
+            bound[name] = getattr(mod, name)
+            get_ipython().user_ns[name] = bound[name]
+    # New names (imports the cell brought, functions it added) must land wherever these functions look them up.
+    for ns in spaces: ns.update(bound)
     where = f"{module}.{'.'.join(owner) + '.' if owner else ''}"
     return f"{', '.join(where + n for n in defs)} now runs this version, here and for every caller in the package. Memory only: the file is unchanged." + \
            (' Note: ' + '; '.join(notes) + '.' if notes else '')
