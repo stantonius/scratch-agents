@@ -35,6 +35,9 @@ def main(
     print(f"AI endpoint: {os.environ.get('POLYA_BASE_URL') or '(provider default for the model)'}   "
           f"model: {os.environ.get('POLYA_MODEL') or 'claude-sonnet-5-5'}   key: {'set' if os.environ.get('POLYA_API_KEY') else 'POLYA_API_KEY not set'}")
     print(f"Kernels start in: {Path(project).resolve() if project else server.CFG['dir'].resolve()}")
+    from .kernel import has_rg
+    print("Code search for the AI: " + ("ripgrep (rg) found" if has_rg() else
+          "ripgrep (rg) NOT found; the AI will fall back to grep. Install it with `sudo apt install ripgrep` (or `pip install 'polya[rg]'` on Ubuntu 24.04+)"))
     print(f"Coding agent (MCP): {server.CFG['url']}/mcp   token in {tokfile}")
     print(f'  claude mcp add --transport http polya {server.CFG["url"]}/mcp -H "Authorization: Bearer $(cat {tokfile.resolve()})"')
     uvicorn.run(server.app, host=host, port=port, log_level='warning')

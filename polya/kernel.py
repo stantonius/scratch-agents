@@ -4,17 +4,30 @@ The kernel is `ipymini` (Answer.AI's small IPython kernel) by default; any insta
 works (`POLYA_KERNEL=python3` for ipykernel). `conkernelclient` is the client, and `ipyfuncs`
 adds the kernel-side helpers (tool schemas, variable listing) used here.
 """
-import asyncio, os
+import asyncio, os, shutil, sys
+from pathlib import Path
 from conkernelclient import ConKernelManager
 
 OUTPUT_TYPES = ('stream', 'display_data', 'execute_result', 'error', 'update_display_data', 'clear_output')
-RESULT_LIMIT = 5000
+RESULT_LIMIT = int(os.environ.get('POLYA_TOOL_CHARS', 20000))   # most text one tool call may hand back to the AI
 
 STARTUP = """
 import ipyfuncs
 from polya.helper import *
 from polya.helper import _call_tool as __polya_call, _definition as __polya_def, _sandbox_run as __polya_sbx, _run_in_module as __polya_inmod
 """
+
+
+def tool_path():
+    "PATH with this Python's own bin folder first."
+    here = str(Path(sys.executable).parent)
+    parts = os.environ.get('PATH', '').split(os.pathsep)
+    return os.pathsep.join([here] + [p for p in parts if p and p != here])
+
+
+def has_rg():
+    "Whether ripgrep's `rg` is available to the kernels."
+    return shutil.which('rg', path=tool_path()) is not None
 
 
 class Kernel:
@@ -38,6 +51,7 @@ class Kernel:
             km = ConKernelManager(kernel_name=self.name)
             # The kernel does not need Polya's own credentials, and code running in it could read them.
             base = {k: v for k, v in os.environ.items() if k not in ('POLYA_API_KEY', 'POLYA_AGENT_TOKEN')}
+            base['PATH'] = tool_path()     # so tools installed next to Polya (such as rg) are found even if the venv is not activated
             await km.start_kernel(cwd=self.cwd, env={**base, **self.env})
             kc = await km.client().start_channels()
             await kc.exec_ok(STARTUP, store_history=False, timeout=60)

@@ -13,6 +13,7 @@ from fastllm.responses import response_input
 
 from . import tools as dtools
 from .dialogs import set_reply, settings
+from .kernel import RESULT_LIMIT, has_rg
 
 MAX_STEPS = int(os.environ.get('POLYA_MAX_STEPS', 12))
 
@@ -85,14 +86,21 @@ SANDBOX_SP = """The `python` and `bash` tools run inside a sandbox in the user's
 - `python` cannot use the network or start subprocesses, and can write files only under folders the user approved (/tmp by default). Reading files, computing, and calling the user's own functions and libraries all work.
 - `bash` runs only allowlisted commands, which by default are read-only.
 - If a call is blocked, the code is left in the dialog as a cell for the user to review and run themselves. Do not look for another way to do the blocked thing: say what you wanted to do and why, and stop.
-- Prefer these tools for looking things up and checking facts. Code that is the user's next step still belongs in a fenced block for them to run."""
+- Prefer these tools for looking things up and checking facts. Code that is the user's next step still belongs in a fenced block for them to run.
+- Use them to answer questions about the codebase: find where something is defined and used, read it, and for "why is it like this" look at `git log`, `git blame` and `git show`. Say what you looked at. If the answer is not in the repository or its history, say so rather than guessing.
+- {search}
+- One result is cut off after about {chars} characters. Narrow a search before running it (a path, a file type, `-l` to list files first), and read a long file in ranges with `tail -n +START file | head -n COUNT`."""
 
 
 def system_prompt(mode, has_tools, folder=None, notes='', sandbox=False):
     sp = BASE_SP
     if notes: sp += '\n\nStanding notes from the user about this project (they apply to every dialog):\n<project-notes>\n' + notes[:20000] + '\n</project-notes>'
     if mode == 'grill': sp += '\n\n' + grill_prompt(folder)
-    return sp + ('\n\n' + TOOLS_SP if has_tools else '') + ('\n\n' + SANDBOX_SP if sandbox else '')
+    if sandbox:
+        search = ('ripgrep is installed: search with `rg` (for example `rg -n "pattern" -t py`, `rg -l "name"`).' if has_rg()
+                  else 'ripgrep (`rg`) is not installed here: search with `grep -rn "pattern" --include="*.py" .` and `find`.')
+        sp_box = SANDBOX_SP.format(search=search, chars=f'{RESULT_LIMIT:,}')
+    return sp + ('\n\n' + TOOLS_SP if has_tools else '') + ('\n\n' + sp_box if sandbox else '')
 
 
 def model_cfg(dlg):

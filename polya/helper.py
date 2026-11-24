@@ -230,15 +230,29 @@ def sandbox_allow(*args):
     return allow(*args)
 
 
+def _safe_bash(cmd, timeout=300):
+    """Check `cmd` against the allowlist with safecmd, then run it. Returns (exit code, output).
+
+    safecmd does the checking; the command is started here so that it gets no standard input (tools such
+    as rg and grep otherwise wait on, or search, stdin instead of the folder) and cannot run for ever.
+    """
+    import subprocess
+    import safecmd, safecmd.core as sc
+    dests = ', '.join(_sbx['dirs'] + ['/dev/null'])
+    if not hasattr(sc, '_eff_sets'): return safecmd.safe_run(cmd, cmds=_sbx['cmds'], dests=dests, ignore_ex=True)
+    safecmd.validate(cmd, *sc._eff_sets(_sbx['cmds'], dests))        # raises DisallowedCmd / DisallowedDest
+    try: r = subprocess.run(cmd, shell=True, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=timeout, env={**os.environ, 'TERM': 'dumb'})
+    except subprocess.TimeoutExpired: return 124, f'Timed out after {timeout} seconds.'
+    return r.returncode, r.stdout + r.stderr
+
+
 async def _sandbox_run(kind, code):
     "Run the AI's `code` in the sandbox: {'result': text}, {'blocked': reason} or {'error': text}."
     import asyncio, contextlib, io
-    lim = 6000
+    lim = int(os.environ.get('POLYA_TOOL_CHARS', 20000))
     try:
         if kind == 'bash':
-            import safecmd
-            rc, out = await asyncio.wait_for(asyncio.to_thread(
-                safecmd.safe_run, code, cmds=_sbx['cmds'], dests=', '.join(_sbx['dirs'] + ['/dev/null']), ignore_ex=True), 300)
+            rc, out = await asyncio.to_thread(_safe_bash, code)
             text = (out or '').rstrip() + ('' if rc == 0 else f'\n[exit code {rc}]')
         else:
             if _sbx['py'] is None:

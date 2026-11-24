@@ -45,6 +45,7 @@ Linux, macOS or WSL, Python 3.11+.
 
 ```bash
 pip install .            # from this folder; or: pip install -e . to hack on it
+sudo apt install ripgrep # fast code search for the AI (it falls back to grep without it)
 
 export POLYA_BASE_URL=https://your-llm-gateway.example.com/v1   # LiteLLM proxy, agent gateway, …
 export POLYA_API_KEY=...                                        # read from the environment only
@@ -209,6 +210,7 @@ refuse work whose evidence is not in the dialog.
 | `POLYA_API` | Wire format: `openai_chat` (default with a base URL; what LiteLLM proxies and most gateways speak), `openai` (Responses API), `anthropic`, or `gemini`. |
 | `POLYA_CTX_TOKENS` | Context window to fit the dialog into (default 200000). Oldest unpinned messages drop out first. |
 | `POLYA_MAX_TOKENS`, `POLYA_MAX_STEPS` | Reply length (4096) and maximum tool rounds per prompt (12). |
+| `POLYA_TOOL_CHARS` | Most text one tool call may hand back to the AI (20000 characters, about 500 lines of code). Longer results are cut with a note saying how much was dropped. |
 | `POLYA_KERNEL` | Jupyter kernelspec for code (default `py` = ipymini; `python3` = ipykernel if you have it). |
 
 Without `POLYA_BASE_URL`, the model name decides the provider (e.g. a `claude-…` model uses
@@ -262,13 +264,14 @@ way. What the AI writes there is marked *added by AI* too. Limits:
 
 ### What the AI can run
 
-The AI has no tools until you give it some. There are three ways, each off by default:
+There are three ways the AI gets tools. The sandboxed code tools are **on by default** in every
+dialog; the other two are off until you use them:
 
 | You do this | The AI can then | Where it runs |
 |---|---|---|
 | Mention a function with `&` | Call that function | Your kernel, unrestricted: it is your function |
 | Tick **AI can edit dialog** | Add, edit, find and delete messages, here or in another dialog you name | The dialogs in this folder. Code it writes is **not run** unless the next box is ticked, and then only in the sandbox and only in this dialog |
-| Tick **AI can run code** | Use a `python` tool and a `bash` tool | Your kernel, **inside a sandbox** |
+| **AI can run code** (ticked by default) | Use a `python` tool and a `bash` tool | Your kernel, **inside a sandbox** |
 
 The sandbox is Answer.AI's [safepyrun](https://github.com/AnswerDotAI/safepyrun) and
 [safecmd](https://github.com/AnswerDotAI/safecmd), the same pair Solveit uses, with tighter
@@ -287,6 +290,13 @@ defaults:
   sandboxed.
 - **Widening it is one line of your code**, in a cell or in `SETUP`:
   `sandbox_cmds('pytest', 'curl')`, `sandbox_dirs('./scratch')`, `sandbox_allow(my_function)`.
+
+**Asking about the codebase.** With the code tools on, the AI can answer "what is Y for?" or
+"why was X built this way?" by searching and reading the repository: `rg`/`grep`/`find` to
+locate things, `cat`/`head`/`tail` to read them, and `git log`, `git blame` and `git show` for
+the history behind them. It has no network, so pull-request discussions, tickets and wikis are
+out of reach: paste what matters into a note. Start-up prints whether `rg` was found, and the
+AI is told which search tool it has.
 
 Two things to be clear about:
 

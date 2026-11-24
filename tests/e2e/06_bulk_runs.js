@@ -20,7 +20,7 @@ const { chromium } = require('playwright');
   await type('code', 'print("C", next(tick))');
   await selectNth(4); await p.keyboard.press('n'); await p.waitForSelector('.editor .CodeMirror');
   await p.keyboard.press('Control+a'); await p.keyboard.insertText('MY EDITED REPLY'); await p.keyboard.press('Escape'); await p.waitForTimeout(500);
-  await p.check('#dtools');
+  await p.uncheck('#ctools'); await p.check('#dtools');   // code tools off, so the AI's cell is left unrun
   await type('prompt', 'add a cell [[call add_msg {"content": "print(\\"AI CELL RAN\\")", "msg_type": "code", "run": true}]]');
   log('0 start outputs', await outs());
   exp('0 start outputs', ['A 1', 'B 2', 'C 3', '']);

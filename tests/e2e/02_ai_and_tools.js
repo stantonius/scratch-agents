@@ -30,7 +30,7 @@ const out = process.argv[2];
   exp('2 tool reply', /Tool total_distance returned: 10/);
   const seen = await (await fetch('http://127.0.0.1:8765/seen')).json();
   log('2 tools offered', seen.tools.map(t => t.function.name));
-  exp('2 tools offered', ['total_distance']);
+  exp('2 tools offered', ['python', 'bash', 'total_distance']);   // the sandboxed tools are on by default
   log('2 has variables block', (seen.messages.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join(' ').match(/<variable name=.{0,60}variable>/) || ['MISSING'])[0]);
   exp('2 has variables block', /<variable name="len\(l1\)">6<\/variable>/);
   log('2 system prompt sent', /dialog-based notebook/.test(JSON.stringify(seen.messages[0])));
@@ -38,6 +38,7 @@ const out = process.argv[2];
   await p.screenshot({ path: out + '/03-tool.png' });
 
   // 3. AI adds a code cell. Without "AI can run code" it is NOT run: the human runs it.
+  await p.uncheck('#ctools');   // with the AI's code tools off, what it writes waits for you
   await p.check('#dtools');
   await type('prompt', 'Please add it [[call add_msg {"content": "print(\'injected by AI\', 6*7)", "msg_type": "code", "run": true}]]');
   await p.waitForFunction(() => /NOT run/.test(document.querySelector('#msgs').innerText), null, { timeout: 30000 }); await idle();

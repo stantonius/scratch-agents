@@ -27,6 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "playwright"]
+rg = ["ripgrep"]   # the rg binary, for fast code search by the AI; needs a recent Linux (glibc 2.39+) or macOS
 
 [project.scripts]
 polya = "polya.cli:main"

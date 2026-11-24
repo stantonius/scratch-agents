@@ -22,7 +22,7 @@ def settings(dlg):
     if s.get('mode') not in MODES: s['mode'] = 'basic'
     s.setdefault('model', '')
     s.setdefault('dialog_tools', False)
-    s.setdefault('code_tools', False)
+    s.setdefault('code_tools', True)    # on unless you turn it off: the AI can look things up in the sandbox
     return s
 
 

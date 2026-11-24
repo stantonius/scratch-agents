@@ -20,6 +20,9 @@ const out = process.argv[2];
   await p.goto('http://127.0.0.1:5001/'); await p.fill('input[name=name]', 'sandbox'); await p.click('.newdlg button'); await p.waitForURL(/sandbox/);
   await type('code', 'data = [3, 4, 9]\ndef double(x): return x * 2'); await p.waitForTimeout(500); await idle();
 
+  log('0 on by default in a new dialog', await p.isChecked('#ctools'));
+  exp('0 on by default in a new dialog', true);
+  await p.uncheck('#ctools'); await p.waitForTimeout(300);
   const seenTools = async () => ((await (await fetch('http://127.0.0.1:8765/seen')).json()).tools || []).map(t => t.function.name);
   await type('prompt', 'hello'); await p.waitForTimeout(1200); await idle();
   log('0 tools when off', await seenTools());
@@ -34,6 +37,17 @@ const out = process.argv[2];
   exp('2 python uses my project', /returned: 120\.0/);
   log('3 bash read-only', tail(await ask('bash', { cmd: 'ls acme | sort | head -3' })));
   exp('3 bash read-only', /orders\.py/);
+  log('3 code search with rg', tail(await ask('bash', { cmd: 'rg -n "def with_tax" -t py' })));
+  exp('3 code search with rg', /returned: acme\/pricing\.py:4:def with_tax/);
+  // a long result reaches the model whole up to the limit, and is cut with a marker beyond it
+  const toolMsg = async () => { const m = (await (await fetch('http://127.0.0.1:8765/seen')).json()).messages.filter(x => x.role === 'tool').pop(); return typeof m.content === 'string' ? m.content : JSON.stringify(m.content); };
+  await ask('python', { code: 'print("x" * 15000)' });
+  log('3 a 15,000 character result arrives whole', (await toolMsg()).length);
+  exp('3 a 15,000 character result arrives whole', v => v >= 15000 && v < 15100);
+  await ask('python', { code: 'print("y" * 50000)' });
+  const big = await toolMsg();
+  log('3 a 50,000 character result is cut at the limit', [big.length, /truncated, \d+ more chars/.test(big)]);
+  exp('3 a 50,000 character result is cut at the limit', v => v[0] > 20000 && v[0] < 20200 && v[1] === true);
   log('4 secrets not in kernel env', tail(await ask('python', { code: 'import os\n[k for k in os.environ if k in ("POLYA_API_KEY", "POLYA_AGENT_TOKEN")]' })));
   exp('4 secrets not in kernel env', /returned: \[\]/);
 
