@@ -44,6 +44,7 @@ The tool is shaped to make that the easy path:
 Linux, macOS or WSL, Python 3.11+.
 
 ```bash
+bash scripts/fetch_codemirror.sh   # only if polya/static/vendor is empty (e.g. after unpacking the single-file copy)
 pip install .            # from this folder; or: pip install -e . to hack on it
 sudo apt install ripgrep # fast code search for the AI (it falls back to grep without it)
 
@@ -415,3 +416,9 @@ to end (the latter with mcpmini's own client, not Claude Code); how well a model
 grilling skill, whether an agent keeps to the dialog, and how good a flow dialog a real agent
 builds from `polya-explore`, are not. The *Open in VS Code* link is generated but was not
 clicked on a machine with VS Code.
+
+## One-file copy
+
+`python scripts/make_gist.py polya-gist.md` writes the whole project into one Markdown file: an
+outline, install steps, an unpack script, then every file under its path. The vendored editor is
+left out and fetched by `scripts/fetch_codemirror.sh`.
