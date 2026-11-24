@@ -42,8 +42,10 @@ def setup_parts(folder):
     if not path.exists(): return [], ''
     try: ms = read_ipynb(path, name=SETUP).messages
     except Exception: return [], ''
-    code = [m.content for m in ms if m.msg_type == 'code' and (m.content or '').strip() and not m.skipped]
-    notes = '\n\n'.join(m.content for m in ms if m.msg_type == 'note' and (m.content or '').strip() and not m.skipped)
+    # Belt and braces: anything in SETUP still marked as written by the notebook's AI is ignored until you run or edit it.
+    ms = [m for m in ms if (m.meta or {}).get('polya_by') != 'ai' and not m.skipped and (m.content or '').strip()]
+    code = [m.content for m in ms if m.msg_type == 'code']
+    notes = '\n\n'.join(m.content for m in ms if m.msg_type == 'note')
     return code, notes
 
 

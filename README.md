@@ -178,8 +178,20 @@ are saved in the reply.
 
 The dialog tools are preloaded in every kernel, so you can use them from code as well:
 `add_msg`, `update_msg`, `del_msg`, `read_msg`, `find_msgs`, `view_dlg`, `msg_str_replace`,
-`run_msg`. Tick **AI can edit dialog** to give all of them to the AI, or mention individual
-ones with `&`.
+`run_msg`, `list_dialogs`. Tick **AI can edit dialog** to give all of them to the AI, or
+mention individual ones with `&`.
+
+**Other dialogs.** Each of these (except `run_msg`) takes an optional `dialog="name"` to act on
+another dialog in the same folder, as Solveit's `dname` does: *"summarise what we found into
+the `findings` dialog"*. The change appears live if that dialog is open, and is saved either
+way. What the AI writes there is marked *added by AI* too. Limits:
+
+- Code cannot be run in another dialog, by the AI or from your code. Each dialog has its own
+  kernel, and what runs there is started by whoever is working in it.
+- The AI can read `SETUP` but cannot change it, because its code runs at every kernel start
+  and its notes brief the AI everywhere. (Anything in `SETUP` still marked *added by AI* is
+  ignored as well.)
+- The AI's sandboxed `python` tool cannot call these functions; they are tools of their own.
 
 ### What the AI can run
 
@@ -188,7 +200,7 @@ The AI has no tools until you give it some. There are three ways, each off by de
 | You do this | The AI can then | Where it runs |
 |---|---|---|
 | Mention a function with `&` | Call that function | Your kernel, unrestricted: it is your function |
-| Tick **AI can edit dialog** | Add, edit, find and delete messages | The dialog. Code it writes is **not run** unless the next box is ticked, and then only in the sandbox |
+| Tick **AI can edit dialog** | Add, edit, find and delete messages, here or in another dialog you name | The dialogs in this folder. Code it writes is **not run** unless the next box is ticked, and then only in the sandbox and only in this dialog |
 | Tick **AI can run code** | Use a `python` tool and a `bash` tool | Your kernel, **inside a sandbox** |
 
 The sandbox is Answer.AI's [safepyrun](https://github.com/AnswerDotAI/safepyrun) and
@@ -284,7 +296,7 @@ drives a real browser through: run-all, streaming replies, code-block extraction
 restart, plots, completion, reordering, cut/paste and persistence. Against the sample
 project in `tests/sample_project` it also covers go-to-definition, the `SETUP` dialog,
 autoreload, both modes, the agent endpoint through an MCP client (`tests/agent_bridge.py`),
-bulk runs (no prompt is re-sent; a prompt with an edited reply is locked), and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
+bulk runs (no prompt is re-sent; a prompt with an edited reply is locked), editing another dialog (and the refusals: running code there, changing `SETUP`), and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
 subprocesses, writes outside `/tmp`, `curl`, `rm`), blocked calls becoming cells, and widening.
 
 **Not tested against a real model or a real coding agent**: no credentials were available

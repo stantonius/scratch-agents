@@ -14,4 +14,5 @@ echo "== tests/agent_bridge.py"; python tests/agent_bridge.py "$TMP/dialogs/.pol
 echo "== tests/e2e/04_codebase.js"; node tests/e2e/04_codebase.js "$SHOTS" "$TMP/proj"
 echo "== tests/e2e/05_sandbox.js"; node tests/e2e/05_sandbox.js "$SHOTS"; rm -f ~/polya_written_by_ai*.txt
 echo "== tests/e2e/06_bulk_runs.js"; node tests/e2e/06_bulk_runs.js
+echo "== tests/e2e/07_other_dialogs.js"; node tests/e2e/07_other_dialogs.js
 echo "Screenshots in $SHOTS"

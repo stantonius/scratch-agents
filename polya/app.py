@@ -64,6 +64,14 @@ class Session:
     def push(self, m):
         if self.has(m.id): self.broadcast(dict(op='upsert', id=m.id, after=self.prev_id(m), html=self.html(m)))
 
+    def dialog_names(self): return dialog_names()
+
+    def other(self, name):
+        "The session for another dialog in the same folder (opening it if need be)."
+        o = get_session(name)
+        if o is None: raise ValueError(f'No dialog named {name!r} in this folder. Use list_dialogs to see the names.')
+        return o
+
     def project_notes(self): return '' if self.name == SETUP else setup_parts(self.folder)[1]
 
     def status(self):

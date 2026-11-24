@@ -67,7 +67,8 @@ def grill_prompt(folder=None):
 TOOLS_SP = """You have tools. They are Python functions that the user chose to give you; calling one really runs it.
 - Use a tool when the user asks for it, or when it is clearly the way to get what they asked for. Otherwise just answer.
 - Tools that change the dialog (add_msg, update_msg, del_msg, msg_str_replace, run_msg) edit the user's own working document. Make only the changes that were asked for, refer to messages by their id, and afterwards say briefly what you changed.
-- Messages you add appear right after the current prompt, in the order you add them."""
+- Messages you add appear right after the current prompt, in the order you add them.
+- The dialog tools act on the dialog you are in. To read or edit another dialog in the same folder, pass its name as `dialog` (list_dialogs gives the names). Do this only when the user asks you to work on another dialog. You cannot run code in another dialog."""
 
 
 SANDBOX_TOOLS = [

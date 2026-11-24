@@ -6,10 +6,11 @@ from, and what you call from a code message). Both routes end up here, acting on
 from fastcore.funccall import get_schema
 
 from . import helper
-from .dialogs import MSG_TYPES, reply, settings
+from .dialogs import MSG_TYPES, SETUP, reply, settings
 
 NAMES = list(helper.DIALOG_TOOLS)
 OWN_ONLY = ('update_msg', 'del_msg', 'msg_str_replace')   # an outside agent may change only what it wrote itself
+WRITES = ('add_msg', 'update_msg', 'del_msg', 'msg_str_replace')
 
 
 def schemas(names=NAMES):
@@ -21,15 +22,16 @@ def _msg(s, id):
     except Exception: raise ValueError(f'No message with id {id!r}. Use view_dlg to see the ids.') from None
 
 
-async def add_msg(s, origin, content, msg_type='note', after='', before='', run=False):
+async def add_msg(s, origin, content, msg_type='note', after='', before='', run=False, _foreign=False):
     if msg_type not in MSG_TYPES: raise ValueError(f'msg_type must be one of {MSG_TYPES}')
     if before: kw = dict(before=_msg(s, before))
     else:
-        anchor = after or s.cursor_id or s.current_id
+        # In the dialog you are in, new messages follow the one that is running. In another dialog they go to the end.
+        anchor = after or (None if _foreign else (s.cursor_id or s.current_id))
         kw = dict(after=_msg(s, anchor)) if anchor and s.has(anchor) else {}
     if origin in ('ai', 'agent'): kw['meta'] = {'polya_by': origin}   # so you can see who wrote it
     m = s.dlg.mk_message(content, msg_type=msg_type, **kw)
-    if not after and not before: s.cursor_id = m.id
+    if not after and not before and not _foreign: s.cursor_id = m.id
     s.changed(m)
     if run and msg_type == 'code': return f'Added message {m.id}. Output:\n{await run_msg(s, origin, m.id)}'
     return m.id
@@ -107,10 +109,25 @@ IMPL = dict(add_msg=add_msg, update_msg=update_msg, del_msg=del_msg, read_msg=re
 
 
 async def call(s, origin, name, args):
+    "Run dialog tool `name` for session `s`. `args['dialog']` may name another dialog in the same folder."
+    args = {k: v for k, v in (args or {}).items() if v is not None}
+    if name == 'list_dialogs': return '\n'.join(n + ('  (this dialog)' if n == s.name else '') for n in s.dialog_names())
     if name not in IMPL: raise ValueError(f'Unknown dialog tool {name!r}')
+    other = str(args.pop('dialog', '') or '').removesuffix('.ipynb')
+    t = s
+    if other and other != s.name:
+        t = s.other(other)
+        # Reading and editing reach other dialogs; running code does not. Each dialog has its own kernel,
+        # and what runs there should be started by whoever is working in it.
+        if name == 'run_msg' or args.get('run'):
+            raise ValueError(f'Code can only be run in the dialog you are in ({s.name}), not in {other}. Add the message without running it.')
+        if name == 'add_msg': args['_foreign'] = True
+    if origin == 'ai' and t.name == SETUP and name in WRITES:
+        raise ValueError(f'The {SETUP} dialog runs at every kernel start and briefs the AI in every dialog, so only the user changes it. '
+                         'Put your suggestion in a note in the current dialog instead.')
     if origin == 'agent' and name in OWN_ONLY:
-        m = _msg(s, (args or {}).get('id'))
+        m = _msg(t, args.get('id'))
         if (m.meta or {}).get('polya_by') != 'agent':
             raise ValueError(f'Message {m.id} was written by the user. You may only change messages you added yourself. '
                              'To propose a change, add a new message with add_msg.')
-    return await IMPL[name](s, origin, **{k: v for k, v in (args or {}).items() if v is not None})
+    return await IMPL[name](t, origin, **args)

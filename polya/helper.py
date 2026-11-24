@@ -8,7 +8,7 @@ import json, os, urllib.error, urllib.request
 
 from fastcore.funccall import call_func
 
-DIALOG_TOOLS = ['add_msg', 'update_msg', 'del_msg', 'read_msg', 'find_msgs', 'view_dlg', 'run_msg', 'msg_str_replace']
+DIALOG_TOOLS = ['add_msg', 'update_msg', 'del_msg', 'read_msg', 'find_msgs', 'view_dlg', 'run_msg', 'msg_str_replace', 'list_dialogs']
 __all__ = DIALOG_TOOLS + ['tool_info', 'source_of', 'sandbox_dirs', 'sandbox_cmds', 'sandbox_allow']
 
 
@@ -41,10 +41,11 @@ def add_msg(
     msg_type: str = 'note',  # 'note', 'code', 'prompt' or 'raw'
     after: str = '',         # Id of the message to put it after (default: after the message that is running now)
     before: str = '',        # Id of the message to put it before (instead of `after`)
-    run: bool = False,       # For a code message: run it straight away and return its output too?
+    run: bool = False,       # For a code message: run it straight away and return its output too? (Only in the dialog you are in)
+    dialog: str = '',        # Another dialog in this folder to add to, by name (see list_dialogs). Default: the dialog you are in
 ) -> str:  # The new message's id, and its output if `run`
-    "Add a message to the dialog. Messages added one after another keep their order."
-    return _api('add_msg', content=content, msg_type=msg_type, after=after, before=before, run=run)
+    "Add a message to a dialog. Messages added one after another keep their order. In another dialog it goes to the end unless you give `after` or `before`."
+    return _api('add_msg', content=content, msg_type=msg_type, after=after, before=before, run=run, dialog=dialog)
 
 
 def update_msg(
@@ -53,51 +54,63 @@ def update_msg(
     msg_type: str = None,  # New type: 'note', 'code', 'prompt' or 'raw' (omit to keep)
     hidden: bool = None,   # True hides the message from the AI, False shows it (omit to keep)
     pinned: bool = None,   # True keeps the message in the AI's context even in very long dialogs (omit to keep)
+    dialog: str = '',      # Another dialog in this folder that holds the message. Default: the dialog you are in
 ) -> str:  # Confirmation
     "Change an existing message's content, type, or hidden/pinned flags."
-    return _api('update_msg', id=id, content=content, msg_type=msg_type, hidden=hidden, pinned=pinned)
+    return _api('update_msg', id=id, content=content, msg_type=msg_type, hidden=hidden, pinned=pinned, dialog=dialog)
 
 
 def del_msg(
-    id: str,  # Id of the message to delete
+    id: str,           # Id of the message to delete
+    dialog: str = '',  # Another dialog in this folder that holds the message. Default: the dialog you are in
 ) -> str:  # Confirmation
-    "Delete a message from the dialog."
-    return _api('del_msg', id=id)
+    "Delete a message from a dialog."
+    return _api('del_msg', id=id, dialog=dialog)
 
 
 def read_msg(
-    id: str,  # Id of the message to read
+    id: str,           # Id of the message to read
+    dialog: str = '',  # Another dialog in this folder that holds the message. Default: the dialog you are in
 ) -> str:  # The message as XML: its content, plus its output (code) or reply (prompt)
     "Read one message in full, with line numbers."
-    return _api('read_msg', id=id)
+    return _api('read_msg', id=id, dialog=dialog)
 
 
 def find_msgs(
     pattern: str = '',     # Regex to search message content for ('' matches every message)
     msg_type: str = None,  # Only this type: 'note', 'code', 'prompt' or 'raw'
+    dialog: str = '',      # Another dialog in this folder to search. Default: the dialog you are in
 ) -> str:  # One line per match: `id:type:start of content`
     "Find messages whose content matches `pattern`."
-    return _api('find_msgs', pattern=pattern, msg_type=msg_type)
+    return _api('find_msgs', pattern=pattern, msg_type=msg_type, dialog=dialog)
 
 
-def view_dlg() -> str:  # One line per message: `id:type:start of content`
-    "Outline of the whole dialog, in order."
-    return _api('view_dlg')
+def view_dlg(
+    dialog: str = '',  # Another dialog in this folder to look at. Default: the dialog you are in
+) -> str:  # One line per message: `id:type:start of content`
+    "Outline of a whole dialog, in order."
+    return _api('view_dlg', dialog=dialog)
+
+
+def list_dialogs() -> str:  # One dialog name per line
+    "Names of the dialogs in this folder. Pass one as `dialog` to the other tools to read or edit it."
+    return _api('list_dialogs')
 
 
 def msg_str_replace(
     id: str,       # Id of the message to edit
     old_str: str,  # Text to replace; must occur exactly once in the message
     new_str: str,  # Replacement text
+    dialog: str = '',  # Another dialog in this folder that holds the message. Default: the dialog you are in
 ) -> str:  # A diff of the change
     "Replace one exact occurrence of `old_str` with `new_str` in a message."
-    return _api('msg_str_replace', id=id, old_str=old_str, new_str=new_str)
+    return _api('msg_str_replace', id=id, old_str=old_str, new_str=new_str, dialog=dialog)
 
 
 def run_msg(
     id: str,  # Id of the code message to run
 ) -> str:  # The message's output as text
-    "Run a code message in the dialog's kernel and return its output."
+    "Run a code message in this dialog's kernel and return its output. Code in other dialogs cannot be run from here."
     return _api('run_msg', id=id)
 
 
