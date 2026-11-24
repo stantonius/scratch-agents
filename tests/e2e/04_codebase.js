@@ -38,7 +38,7 @@ const out = process.argv[2], proj = process.argv[3];
   log('2 followed into', [await p.$eval('#dtitle', e => e.innerText), (await p.$eval('#dmeta .path', e => e.innerText)).split('/').pop()]);
   await p.screenshot({ path: out + '/07-definition.png' });
   await p.click('#dcode'); await p.waitForTimeout(600);
-  log('2 inserted as code', await p.$eval('.msg.sel .min', e => e.innerText.replace(/\/tmp\/\S+\/(proj|tests)/, '…').split('\n').slice(0, 4).join(' | ')));
+  log('2 brought in as a linked cell', await p.$eval('.msg.sel .min', e => e.innerText.replace(/\/tmp\/\S+\/(proj|tests)/, '…').split('\n').slice(0, 4).join(' | ')));
   await p.click('#dback'); await p.waitForFunction(() => /order_total/.test(document.querySelector('#dtitle').innerText)); await p.click('#dclose');
   await p.focus('#msgs'); await p.keyboard.press('x'); await p.waitForTimeout(400);
 

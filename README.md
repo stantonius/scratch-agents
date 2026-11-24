@@ -68,13 +68,13 @@ polya --dir ~/dialogs/myproject --project ~/code/myproject
 
 - **`--project`** starts every kernel in that folder with it on the import path, so
   `from mypkg.orders import total` works as it does in the project.
-- **Go to definition.** Hold `Ctrl` (`Cmd` on a Mac) and click a name in any code message, or
-  press `F12` in an editor. A panel shows its signature, file, line and source, read from the
-  live kernel, so it is the code that is actually loaded. `Ctrl`+click inside that source
-  follows names within their own module. *Insert as code* copies the definition into a cell
-  to run and change line by line (it redefines the name in the kernel only; the file is
-  untouched). *Insert as note* puts it where the AI can see it. The name has to exist in the
-  kernel first: run the import.
+- **Go to definition.** Hold `Ctrl` (`Cmd` on a Mac) and click a name in any code, or
+  right-click it and choose *Go to definition*, or press `F12` in an editor. A panel shows its
+  signature, file, line and source, read from the live kernel, so it is the code that is
+  actually loaded. Do the same inside that source to keep following it. *Open in VS Code* jumps
+  to the file and line in your editor. Names are looked up in the notebook first and then as
+  import paths, and inside a linked cell they are looked up in that cell's own module, so the
+  things a function uses resolve even though you never imported them yourself.
 - **Project setup.** *Create project setup* on the dialog list makes a dialog called `SETUP`.
   Its **code messages run every time a kernel starts or restarts** (autoreload, environment
   variables, stand-ins for databases and services you can't reach). Its **notes are given to
@@ -82,6 +82,67 @@ polya --dir ~/dialogs/myproject --project ~/code/myproject
   and the rest still run.
 - `source_of("mypkg.orders.total")` returns the same source as text. It is preloaded, so you
   can call it, or hand it to the AI as a tool with `&`.
+
+### Bringing code in, changing it, and writing it back
+
+The repository's `.py` files stay the source of truth. Polya does not convert them. Instead a
+code cell can be **linked** to one function, class or method in a file: it remembers the file,
+the name, and a fingerprint of the source at the moment you brought it in. Everything below
+follows from that link, and none of it uses a model.
+
+**Bringing code in**
+
+- From the definition panel: *Bring into dialog*.
+- By name, from a code cell or as a tool for the AI: `add_source("Order.subtotal", file="acme/orders.py")`
+  or `add_source("acme.orders.order_total")`.
+- A model decides *which* functions and in what order; Polya copies them from the file exactly.
+  Project code is never retyped by a model, so a linked cell is known to match its file.
+
+**Running a linked cell** runs it inside its own module. It sees that module's imports,
+constants and helpers, and the definition it produces replaces the loaded one in place, so
+every caller in the package uses your version straight away — including callers in other
+files. That is what makes "change it and see what happens" work across a flow. It is memory
+only; the file is untouched. (One limit: a method that calls `super()` with no arguments only
+works once it is written to the file.)
+
+**Tracking.** Each linked cell shows its file, name and one of:
+
+| Status | Meaning |
+|---|---|
+| in sync | The cell and the file match |
+| edited here | You changed the cell; the file is as you brought it in |
+| changed on disk | The file changed since you brought it in (your agent, a pull, your editor) |
+| conflict | Both changed |
+| new, not in a file yet | New code with a destination but not written |
+
+**Writing back** is always your action:
+
+- `diff` on a cell shows exactly what would change; `→ file` writes that one function's lines.
+- **Changes** in the header lists every linked cell that differs, grouped by file, each with
+  its diff. Tick what to keep and *Write selected to files*.
+- `revert` throws away the cell's changes, takes the file's version, and puts it back in memory.
+- A cell whose file changed underneath it is never written silently: you are shown both
+  sides and choose to overwrite or revert.
+- Only files inside `--project` can be written. Library code can be brought in to read and
+  experiment with, but not written.
+
+**New code needs a destination.** `→ file…` on an unlinked code cell asks for the file and the
+position: after a named function, after a method (which puts it inside that class, indented),
+or at the end of the file. It defaults to the file of the nearest linked cell above. Setting
+the destination writes nothing; the code is written when you apply it.
+
+Not handled: imports your new code needs are not added to the file for you, deleting a
+function from a file is done in your editor, and formatting is left to your project's
+formatter.
+
+### Having a model build the dialog
+
+For "walk me through the auth flow", your coding agent builds the dialog over MCP:
+`create_dialog`, notes explaining the flow, `add_source` for each function in call order, and
+small runnable examples. `agent-skills/polya-explore/SKILL.md` is the instruction file for
+this; copy it into your agent's skills folder (for Claude Code, `.claude/skills/`). The
+notebook's own AI can do the same within a dialog with `add_source`, if you give it tools to
+find the code.
 
 ### Grill mode
 
@@ -113,6 +174,7 @@ What the agent gets:
 |---|---|
 | `list_dialogs`, `view_dlg`, `read_msg`, `find_msgs` | Read your dialogs: your notes, code, outputs and AI replies |
 | `kernel_state`, `source_of` | See what is actually defined and loaded in the dialog's kernel |
+| `create_dialog`, `add_source` | Create a dialog and bring functions from the repository into it as linked cells |
 | `add_msg` (with `run`), `run_msg` | Add notes and code cells **to your dialog** and run them **in your kernel** |
 | `update_msg`, `del_msg` | Change or remove **only cells it added itself** |
 
@@ -178,7 +240,7 @@ are saved in the reply.
 
 The dialog tools are preloaded in every kernel, so you can use them from code as well:
 `add_msg`, `update_msg`, `del_msg`, `read_msg`, `find_msgs`, `view_dlg`, `msg_str_replace`,
-`run_msg`, `list_dialogs`. Tick **AI can edit dialog** to give all of them to the AI, or
+`run_msg`, `list_dialogs`, `add_source`. Tick **AI can edit dialog** to give all of them to the AI, or
 mention individual ones with `&`.
 
 **Other dialogs.** Each of these (except `run_msg`) takes an optional `dialog="name"` to act on
@@ -299,7 +361,12 @@ autoreload, both modes, the agent endpoint through an MCP client (`tests/agent_b
 bulk runs (no prompt is re-sent; a prompt with an edited reply is locked), editing another dialog (and the refusals: running code there, changing `SETUP`), and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
 subprocesses, writes outside `/tmp`, `curl`, `rm`), blocked calls becoming cells, and widening.
 
+The round trip (`tests/e2e/08_roundtrip.js`) covers bringing code in, running it inside its
+module, every status, diff, write-back, revert, conflicts, and new functions and methods.
+
 **Not tested against a real model or a real coding agent**: no credentials were available
 where this was built. The OpenAI-compatible wire format and the MCP endpoint are exercised end
 to end (the latter with mcpmini's own client, not Claude Code); how well a model follows the
-grilling skill, and whether an agent keeps to the dialog, are not.
+grilling skill, whether an agent keeps to the dialog, and how good a flow dialog a real agent
+builds from `polya-explore`, are not. The *Open in VS Code* link is generated but was not
+clicked on a machine with VS Code.

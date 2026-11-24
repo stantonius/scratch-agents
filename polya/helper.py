@@ -8,7 +8,7 @@ import json, os, urllib.error, urllib.request
 
 from fastcore.funccall import call_func
 
-DIALOG_TOOLS = ['add_msg', 'update_msg', 'del_msg', 'read_msg', 'find_msgs', 'view_dlg', 'run_msg', 'msg_str_replace', 'list_dialogs']
+DIALOG_TOOLS = ['add_msg', 'update_msg', 'del_msg', 'read_msg', 'find_msgs', 'view_dlg', 'run_msg', 'msg_str_replace', 'list_dialogs', 'add_source']
 __all__ = DIALOG_TOOLS + ['tool_info', 'source_of', 'sandbox_dirs', 'sandbox_cmds', 'sandbox_allow']
 
 
@@ -92,6 +92,16 @@ def view_dlg(
     return _api('view_dlg', dialog=dialog)
 
 
+def add_source(
+    symbol: str,       # A function, class or method. With `file`: its name in that file, e.g. `order_total` or `Order.subtotal`. Without: a dotted import path, e.g. `acme.orders.order_total`
+    file: str = '',    # The .py file that defines it, relative to the project folder, e.g. `acme/orders.py`. Give this whenever you know it
+    after: str = '',   # Id of the message to put it after (default: after the message that is running now)
+    dialog: str = '',  # Another dialog in this folder to add to. Default: the dialog you are in
+) -> str:  # The new message's id
+    "Bring a function, class or method from the codebase into the dialog as a linked code message. The code is copied from the file exactly as it is (do not retype project code with add_msg), and the message stays linked to the file so changes can be tracked and written back."
+    return _api('add_source', symbol=symbol, file=file, after=after, dialog=dialog)
+
+
 def list_dialogs() -> str:  # One dialog name per line
     "Names of the dialogs in this folder. Pass one as `dialog` to the other tools to read or edit it."
     return _api('list_dialogs')
@@ -131,7 +141,16 @@ def _resolve(name, ctx=''):
         if first in ns:
             obj = ns[first]
             break
-    else: raise NameError(f"`{first}` is not defined in the kernel yet. Run the cell that imports or defines it first.")
+    else:
+        # Not a name the notebook has: try it as a module path, e.g. `acme.orders.order_total`.
+        import importlib
+        parts, obj = name.split('.'), None
+        for i in range(len(parts), 0, -1):
+            try: obj = importlib.import_module('.'.join(parts[:i]))
+            except Exception: continue
+            rest = parts[i:]
+            break
+        if obj is None: raise NameError(f"`{first}` is not defined in the kernel and is not an importable module. Run the cell that imports or defines it first.")
     for r in rest: obj = getattr(obj, r)
     return obj
 
@@ -239,3 +258,45 @@ async def _sandbox_run(kind, code):
             return dict(blocked=f'{what}: {e}')
         import traceback
         return dict(error=''.join(traceback.format_exception_only(type(e), e)).strip()[:2000])
+
+
+# ---------------------------------------------------------------- running a linked cell inside its module
+def _run_in_module(module, qualname, code):
+    """Run a cell that is linked to `module`'s `qualname` as if it were still in that file.
+
+    The code sees the module's own imports, constants and helpers. The definition it produces replaces
+    the loaded one *in place*, so every caller in the package uses it straight away. Memory only: the
+    file is not touched.
+    """
+    import importlib, linecache, sys, textwrap
+    from IPython import get_ipython
+    from IPython.extensions.autoreload import update_generic
+    try: mod = importlib.import_module(module)
+    except Exception as e: raise ImportError(f'Could not import {module} to run this cell in it: {type(e).__name__}: {e}') from None
+    code = textwrap.dedent(code)
+    fname = f'<polya {module}:{qualname}>'
+    linecache.cache[fname] = (len(code), None, code.splitlines(True), fname)   # so tracebacks show these lines
+    made = {}
+    exec(compile(code, fname, 'exec'), mod.__dict__, made)
+    defs = {k: v for k, v in made.items() if callable(v) or isinstance(v, (property, staticmethod, classmethod))}
+    if not defs:
+        mod.__dict__.update(made)
+        return f'Ran in {module} (memory only). It defined no function or class.'
+    *owner, _ = qualname.split('.')
+    holder = mod
+    for part in owner: holder = getattr(holder, part)
+    notes = []
+    for name, new in defs.items():
+        old = holder.__dict__.get(name) if owner else mod.__dict__.get(name)
+        if old is not None and type(old) is type(new):
+            try: update_generic(old, new)          # same trick as autoreload: callers keep their reference, the behaviour changes
+            except Exception: old = None
+        if old is None or type(old) is not type(new):
+            setattr(holder, name, new)
+            if 'super()' in code and owner: notes.append(f'{name} uses super() with no arguments, which only works once it is written to the file')
+        if not owner: get_ipython().user_ns[name] = getattr(mod, name)
+    for k, v in made.items():
+        if k not in defs: mod.__dict__[k] = v
+    where = f"{module}.{'.'.join(owner) + '.' if owner else ''}"
+    return f"{', '.join(where + n for n in defs)} now runs this version, here and for every caller in the package. Memory only: the file is unchanged." + \
+           (' Note: ' + '; '.join(notes) + '.' if notes else '')

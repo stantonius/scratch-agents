@@ -55,16 +55,20 @@ def output_html(o):
     return ''
 
 
-ICONS = dict(run='▶', edit='✎', reply='✎ reply', extract='⤓ code', hide='hide', pin='pin', up='↑', down='↓', delete='✕')
+ICONS = dict(run='▶', edit='✎', reply='✎ reply', extract='⤓ code', hide='hide', pin='pin', up='↑', down='↓', delete='✕',
+             diff='diff', apply='→ file', revert='revert', tofile='→ file…')
 TIPS = dict(run='Run (Ctrl+Enter)', edit='Edit (Enter)', reply="Edit the AI's reply (n)", extract='Copy code blocks into code messages (w)',
             hide='Hide from / show to the AI (h)', pin='Pin: always keep in the AI context (p)', up='Move up (Alt+↑)',
-            down='Move down (Alt+↓)', delete='Delete (x cuts it)')
+            down='Move down (Alt+↓)', delete='Delete (x cuts it)',
+            diff='Show how this cell differs from the file', apply='Write this cell into its file (shows the diff first)',
+            revert="Throw away this cell's changes and take the file's version again",
+            tofile='Choose the file and position this code should be written to')
 
 
 def _btn(act): return f'<button class="act" data-act="{act}" title="{esc(TIPS[act])}">{ICONS[act]}</button>'
 
 
-def msg_html(m, live=None, running=False, error=''):
+def msg_html(m, live=None, running=False, error='', link=None):
     "One message. `live` is the reply text while the AI is still streaming it."
     t = m.msg_type
     cls = f'msg t-{t}' + (' is-hidden' if m.skipped else '') + (' is-pinned' if m.pinned else '') + (' is-running' if running else '')
@@ -73,12 +77,26 @@ def msg_html(m, live=None, running=False, error=''):
     acts = ['run'] if t == 'code' or (t == 'prompt' and not locked) else []
     acts += ['edit']
     if t == 'prompt': acts += ['reply', 'extract']
+    if t == 'code' and link:
+        cls += f" is-linked s-{link['status']}"
+        acts += {'sync': [], 'new': ['diff', 'apply', 'tofile'], 'missing': ['tofile'], 'nofile': ['tofile']}.get(link['status'], ['diff', 'apply', 'revert'])
+    elif t == 'code': acts += ['tofile']
     acts += ['hide', 'pin', 'up', 'down', 'delete']
     by = (m.meta or {}).get('polya_by')
     if by in ('ai', 'agent'): cls += f' by-{by}'
     who = {'ai': ("added by AI", "Added by the notebook's AI and not edited by you since"),
            'agent': ('added by agent', 'Added by your coding agent and not edited by you since')}.get(by)
-    flags = (f'<span class="flag f-by" title="{who[1]}">{who[0]}</span>' if who else '') + \
+    lflag = ''
+    if t == 'code' and link:
+        what = link.get('qualname') or ('after ' + link['after'] if link.get('after') else 'end of file')
+        tip = {'sync': 'This cell matches the file.', 'edited': 'You changed this cell. The file still has the version you brought in.',
+               'disk': 'The file changed after you brought this in. Revert to take the new version.',
+               'conflict': 'Both this cell and the file changed since you brought it in.', 'new': 'New code. It will be written to this file at this position when you apply it.',
+               'missing': 'This function is no longer in the file.', 'nofile': 'The file this was linked to cannot be found.'}[link['status']]
+        ran = f" Running it replaces {link['module']}'s loaded version in memory, for every caller." if link.get('module') else ''
+        lflag = (f'<span class="flag f-src" data-module="{esc(link.get("module") or "")}" title="{esc(tip + ran)}">'
+                 f'{esc(link["file"])} · {esc(what)}<b> · {esc(link["label"])}</b></span>')
+    flags = lflag + (f'<span class="flag f-by" title="{who[1]}">{who[0]}</span>' if who else '') + \
             ('<span class="flag f-lock" title="You edited this reply, so the prompt will not be re-sent. Clear the reply to ask again.">reply edited · locked</span>' if locked else '') + \
             ('<span class="flag f-pin" title="Pinned: always in the AI context">pinned</span>' if m.pinned else '') + \
             ('<span class="flag f-hide" title="Hidden from the AI">hidden from AI</span>' if m.skipped else '')

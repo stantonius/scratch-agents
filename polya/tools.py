@@ -10,7 +10,7 @@ from .dialogs import MSG_TYPES, SETUP, reply, settings
 
 NAMES = list(helper.DIALOG_TOOLS)
 OWN_ONLY = ('update_msg', 'del_msg', 'msg_str_replace')   # an outside agent may change only what it wrote itself
-WRITES = ('add_msg', 'update_msg', 'del_msg', 'msg_str_replace')
+WRITES = ('add_msg', 'add_source', 'update_msg', 'del_msg', 'msg_str_replace')
 
 
 def schemas(names=NAMES):
@@ -104,7 +104,15 @@ async def run_msg(s, origin, id):
     return m.ai_output or '(no output)'
 
 
-IMPL = dict(add_msg=add_msg, update_msg=update_msg, del_msg=del_msg, read_msg=read_msg, find_msgs=find_msgs,
+async def add_source(s, origin, symbol, file='', after='', _foreign=False):
+    anchor = after or (None if _foreign else (s.cursor_id or s.current_id))
+    m = await s.add_source(symbol, file, after=anchor if anchor and s.has(anchor) else None)
+    if not after and not _foreign: s.cursor_id = m.id
+    src = m.meta['polya_src']
+    return f"{m.id}: linked to {src['file']} :: {src['qualname']} ({len(m.content.splitlines())} lines)"
+
+
+IMPL = dict(add_source=add_source, add_msg=add_msg, update_msg=update_msg, del_msg=del_msg, read_msg=read_msg, find_msgs=find_msgs,
             view_dlg=view_dlg, msg_str_replace=msg_str_replace, run_msg=run_msg)
 
 
@@ -121,7 +129,7 @@ async def call(s, origin, name, args):
         # and what runs there should be started by whoever is working in it.
         if name == 'run_msg' or args.get('run'):
             raise ValueError(f'Code can only be run in the dialog you are in ({s.name}), not in {other}. Add the message without running it.')
-        if name == 'add_msg': args['_foreign'] = True
+        if name in ('add_msg', 'add_source'): args['_foreign'] = True
     if origin == 'ai' and t.name == SETUP and name in WRITES:
         raise ValueError(f'The {SETUP} dialog runs at every kernel start and briefs the AI in every dialog, so only the user changes it. '
                          'Put your suggestion in a note in the current dialog instead.')

@@ -18,6 +18,7 @@ Your user wants to see what you do and why. Work like this:
 - Use kernel_state and source_of to see what is actually loaded in the user's kernel instead of guessing from files.
 - You can change or delete only the messages you added. To suggest a change to the user's own message, add a new message with the suggestion.
 - When you edit files in the repository, add a note to the dialog saying which files you changed and why, and a code cell the user can run to see the change working.
+- When the user asks to explore or understand a part of the codebase ("walk me through the auth flow"), build them a dialog for it: create_dialog, then a short note saying what the flow does and where it starts, then for each step in call order a one-or-two-sentence note followed by add_source for that function, and after the first step and wherever it helps a small code cell that actually calls the code with realistic inputs (run it so they see the output). Bring in the functions that matter to the flow, not whole files. End with a note listing what you left out and open questions. Project code always goes in through add_source so the cells stay linked to the files.
 - Do not flood the dialog. Remove your own cells that turned out to be dead ends, or say in a note that they were."""
 
 
@@ -68,6 +69,26 @@ def make_server():
         if msg_type not in ('note', 'code'): raise ValueError("msg_type must be 'note' or 'code'")
         return await dtools.call(_s(dialog), 'agent', 'add_msg', dict(content=content, msg_type=msg_type, after=after, before=before, run=run))
 
+    async def add_source(
+        dialog: str,      # Dialog name
+        symbol: str,      # Function, class or method name as it appears in the file, e.g. `order_total` or `Order.subtotal`
+        file: str,        # The .py file that defines it, relative to the project folder, e.g. `acme/orders.py`
+        after: str = '',  # Id of the message to put it after (default: the end of the dialog)
+    ) -> str:  # The new message's id and what it is linked to
+        "Bring a function, class or method from the repository into the dialog as a linked code cell. Polya copies the code from the file exactly and keeps the cell linked to it, so the user can run it, change it, see how it differs from the file, and write it back. ALWAYS use this for project code; never retype project code with add_msg."
+        return await dtools.call(_s(dialog), 'agent', 'add_source', dict(symbol=symbol, file=file, after=after))
+
+    async def create_dialog(
+        dialog: str,  # Name for the new dialog: letters, digits, spaces, dots, dashes, underscores
+    ) -> str:  # Confirmation
+        "Create a new, empty dialog, for example to lay out one flow through the code. Fails if the name is taken."
+        from .dialogs import load, valid_name
+        if not valid_name(dialog): raise ValueError('Names may use letters, digits, spaces, dots, dashes and underscores.')
+        path = app.CFG['dir'] / f'{dialog}.ipynb'
+        if path.exists(): raise ValueError(f'A dialog named {dialog!r} already exists.')
+        load(path).save()
+        return f'Created dialog {dialog!r}. The user can open it at {app.CFG["url"]}/d/{dialog}'
+
     async def run_msg(
         dialog: str,  # Dialog name
         id: str,      # Id of a code message
@@ -106,7 +127,7 @@ def make_server():
         "Source of a function, class or module exactly as the dialog's kernel has it loaded (it must already be imported there)."
         return await _s(dialog).kernel.call('source_of', dict(name=symbol))
 
-    return MCPServer('polya', [list_dialogs, view_dlg, read_msg, find_msgs, add_msg, run_msg, update_msg, del_msg, kernel_state, source_of],
+    return MCPServer('polya', [list_dialogs, create_dialog, view_dlg, read_msg, find_msgs, add_source, add_msg, run_msg, update_msg, del_msg, kernel_state, source_of],
                      instructions=INSTRUCTIONS)
 
 

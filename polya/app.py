@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, agent, ai, tools as dtools
+from . import __version__, agent, ai, source as so, tools as dtools
 from .dialogs import (MODES, MSG_TYPES, SETUP, add_stream_output, fenced_blocks, load, make_setup, make_welcome, msg_tokens, reply, set_reply,
                       settings, setup_parts, valid_name)
 from .kernel import Kernel
@@ -59,7 +59,45 @@ class Session:
         for q in list(self.subs): q.put_nowait(data)
 
     def html(self, m):
-        return msg_html(m, live=self.live.get(m.id), running=m.id in self.running, error=self.errors.get(m.id, ''))
+        return msg_html(m, live=self.live.get(m.id), running=m.id in self.running, error=self.errors.get(m.id, ''), link=self.src_info(m))
+
+    # -- cells linked to the codebase
+    @property
+    def project(self): return str(Path(CFG['project']).resolve()) if CFG['project'] else None
+
+    def src_info(self, m):
+        "For a linked cell: its link plus how it compares with the file right now. None for an ordinary cell."
+        src = (m.meta or {}).get('polya_src')
+        if not src or m.msg_type != 'code': return None
+        st, _ = so.status(src, m.content or '', self.project)
+        return dict(src, status=st, label=so.LABELS[st])
+
+    async def add_source(self, symbol, file='', after=None):
+        "Add a code message holding `symbol`'s source, copied from its file and linked to it."
+        symbol, file, module = (symbol or '').strip(), (file or '').strip(), ''
+        if not symbol: raise ValueError('Name the function, class or method to bring in.')
+        if file: path, qual = so.resolve(file, self.project), symbol
+        else:
+            d = await self.kernel.definition(symbol)
+            if 'error' in d: raise ValueError(f"{d['error']} Or pass `file` to locate it without importing.")
+            if d['kind'] not in ('function', 'class') or not d.get('file'):
+                raise ValueError(f'`{symbol}` is a {d["kind"]}, not a function or class with source in a file.')
+            path, qual, module = Path(d['file']), d['qualname'], d.get('module') or ''
+        link, code = so.link(path, qual, self.project)
+        if not link['module']: link['module'] = module
+        m = self.dlg.mk_message(code, msg_type='code', meta={'polya_src': link}, **({'after': self.dlg.msg(after)} if after else {}))
+        self.changed(m)
+        return m
+
+    def code_for(self, m):
+        "What actually gets sent to the kernel for `m`: a linked cell runs inside its own module."
+        src = (m.meta or {}).get('polya_src')
+        if not src or not src.get('module'): return m.content
+        qual = src.get('qualname') or ''
+        if src.get('kind') == 'new':
+            owner = src['after'].rsplit('.', 1)[0] + '.' if '.' in (src.get('after') or '') else ''
+            qual = owner + (so.def_name(m.content) or 'new')
+        return f"__polya_inmod({src['module']!r}, {qual!r}, {m.content!r})"
 
     def push(self, m):
         if self.has(m.id): self.broadcast(dict(op='upsert', id=m.id, after=self.prev_id(m), html=self.html(m)))
@@ -101,7 +139,7 @@ class Session:
         self.running.add(m.id); self.push(m); self.status()
         last = 0
         try:
-            async for jm in self.kernel.run(m.content):
+            async for jm in self.kernel.run(self.code_for(m)):
                 add_stream_output(m, jm)
                 if time.monotonic() - last > 0.08: self.push(m); last = time.monotonic()
         except Exception as e:
@@ -307,7 +345,7 @@ def duplicate(name: str):
 HELP = [
     ('Moving around', [('↑ ↓  or  k j', 'select previous / next message'), ('Home / End', 'first / last message'), ('/', 'jump to the editor at the bottom'), ('Esc', 'leave an editor (saves)')]),
     ('Writing', [('Enter', 'edit the selected message'), ('n', "edit the AI's reply (an edited reply locks the prompt against re-sending)"), ('a / b', 'new message above / below'),
-                 ('Ctrl+Shift+J/K/L', 'make it code / note / prompt (or Alt+J/K/L)'), ('1 – 6', 'make a note a heading of that level'), ('Tab', 'complete code from the live kernel'), ('Ctrl+click a name', 'show where it is defined, with its source (F12 in an editor)')]),
+                 ('Ctrl+Shift+J/K/L', 'make it code / note / prompt (or Alt+J/K/L)'), ('1 – 6', 'make a note a heading of that level'), ('Tab', 'complete code from the live kernel'), ('Ctrl+click a name', 'go to its definition (also right-click, or F12 in an editor)')]),
     ('Running', [('Ctrl+Enter', 'run code, or send a prompt to the AI'), ('Shift+Enter', 'run and move to the next message'), ('Alt+Enter', 'in the bottom editor: send a prompt and stay in prompt mode'),
                  ('r', 'run all code messages (never re-sends prompts)'), ('Shift+A / Shift+B', 'run the code messages above / from here down'), ('Shift+S', 'stop the running code or AI reply'), ('Shift+R', 'restart the kernel'), ('Backspace', "clear a code message's output")]),
     ('Dialog engineering', [('w', "copy the AI's code blocks into code messages"), ('h', 'hide a message from the AI / show it again'), ('p', 'pin a message so it always stays in the AI context'),
@@ -338,6 +376,7 @@ def dialog(name: str):
         Button('Restart', id='restart', title='Restart the kernel: all variables are lost (Shift+R)'),
         Select(Option('Export…', value=''), Option('Notebook (.ipynb)', value='ipynb'), Option('Markdown (.md)', value='md'),
                Option('Python script (.py)', value='py'), id='export'),
+        Button('Changes', id='chgbtn', title='Cells linked to files that differ from them: review the diffs and write them back'),
         Button('Vars', id='sidetoggle', title='Show the outline and live variables'),
         Button('?', id='helpbtn', title='Keyboard shortcuts (?)'),
         cls='top')
@@ -359,6 +398,7 @@ def dialog(name: str):
                         Button('✕', id='dclose', title='Close (Esc)'), cls='dhead'),
                     Div(id='dmeta', cls='dmeta'), Div(id='dbody', cls='dbody'), id='defn', hidden=True),
                 Div(id='banner', hidden=True),
+                Div(Div(id='mbox', cls='mbox'), id='modal', hidden=True), Div(id='ctxmenu', hidden=True),
                 Script(src=f'/static/vendor/codemirror.js?v={__version__}'), Script(src=f'/static/vendor/codemirror-extras.js?v={__version__}'),
                 Script(src=f'/static/app.js?v={__version__}'), cls='dlgbody', data={'data-dialog': name})
 
@@ -432,6 +472,7 @@ async def do(name: str, req):
         if 'type' in b and b['type'] in MSG_TYPES and b['type'] != m.msg_type:
             keep = reply(m) if m.msg_type == 'prompt' else ''
             m.msg_type = b['type']
+            if b['type'] != 'code': m.meta.pop('polya_src', None)
             if keep and b['type'] == 'prompt': set_reply(m, keep)
         if 'content' in b:
             if b['content'] != m.content: m.meta.pop('polya_by', None)   # you edited it: it is yours now
@@ -462,6 +503,42 @@ async def do(name: str, req):
             s.dlg.move_msgs([m.id], **({'after': other.id} if j > i else {'before': other.id}))
             s.save(); s.push(m); s.push(other)
         return J(ok=True)
+    if op == 'add_source':
+        try: nm = await s.add_source(b.get('symbol') or b.get('qualname', ''), b.get('file', ''), after=b['after'] if b.get('after') and s.has(b['after']) else None)
+        except Exception as e: return J(error=str(e))
+        return J(id=nm.id)
+    if op in ('src_diff', 'src_apply', 'src_revert', 'src_target', 'src_unlink'):
+        src = (m.meta or {}).get('polya_src')
+        try:
+            if op == 'src_target':      # say where a new piece of code should go
+                path = so.resolve(str(b.get('file', '')).strip(), s.project)
+                if not so.in_project(path, s.project): return J(error='Choose a .py file inside the project folder (start Polya with --project).')
+                after = str(b.get('after') or '')
+                if path.exists() and after and so.find(path, after) is None: return J(error=f'`{after}` is not in {b.get("file")}.')
+                if not path.exists() and not b.get('create'): return J(error=f'{b.get("file")} does not exist. Tick "create the file" to make it.')
+                if not path.exists(): path.parent.mkdir(parents=True, exist_ok=True); path.write_text('', encoding='utf8')
+                m.meta['polya_src'] = dict(file=so.relative(path, s.project), qualname='', module=so.module_name(path, s.project), sha='', kind='new', after=after)
+                s.changed(m); return J(ok=True)
+            if not src: return J(error='This cell is not linked to a file.')
+            if op == 'src_unlink': m.meta.pop('polya_src', None); s.changed(m); return J(ok=True)
+            st, fsrc = so.status(src, m.content or '', s.project)
+            name = f"{src['file']} :: {src.get('qualname') or so.def_name(m.content) or 'new code'}"
+            if op == 'src_diff':
+                where = f" (new: goes {'after ' + src['after'] if src.get('after') else 'at the end of the file'})" if st == 'new' else ''
+                return J(status=st, label=so.LABELS[st], name=name + where, diff=so.udiff(fsrc or '', m.content or '', src.get('qualname') or 'new code'))
+            if op == 'src_revert':
+                if fsrc is None: return J(error='There is no version in the file to go back to.')
+                m.content, m.output = fsrc, []
+                src['sha'] = so.sha(fsrc); m.meta.pop('polya_by', None)
+                s.changed(m); s.spawn(s.run_code(m))     # put the file's version back in memory too
+                return J(ok=True)
+            m.meta['polya_src'] = so.apply(src, m.content or '', s.project, force=bool(b.get('force')))
+            m.meta.pop('polya_by', None)
+            s.changed(m)
+            for o in s.dlg.messages:      # other cells linked to the same file may have moved or changed status
+                if o is not m and (o.meta or {}).get('polya_src', {}).get('file') == src['file']: s.push(o)
+            return J(ok=True, written=name)
+        except so.SourceError as e: return J(error=str(e))
     if op == 'extract':
         blocks = fenced_blocks(reply(m))
         after, ids = m, []
@@ -513,8 +590,50 @@ async def definition(name: str, req):
     if s is None: return J(error='No such dialog')
     if s.running and not s.kernel.sidecar: return J(error='The kernel is busy. Try again when it is idle.')
     d = await s.kernel.definition(str(b.get('name', ''))[:300], str(b.get('ctx', ''))[:300])
-    if 'error' not in d: d['html'] = code_html(d['source']) if d['source'] else ''
+    if 'error' not in d:
+        d['html'] = code_html(d['source']) if d['source'] else ''
+        if d.get('file') and Path(d['file']).is_file():
+            d['rel'] = so.relative(d['file'], s.project)
+            d['linkable'] = d['kind'] in ('function', 'class')
+            # A link that opens the file at that line in VS Code (through the WSL remote when running under WSL).
+            wsl = os.environ.get('WSL_DISTRO_NAME')
+            d['open'] = (f"vscode://vscode-remote/wsl+{wsl}{d['file']}:{d['line']}" if wsl else f"vscode://file{d['file']}:{d['line']}")
     return J(**d)
+
+
+@rt('/d/{name}/changes')
+def changes(name: str):
+    "Every linked cell that differs from its file, with the diff: what 'Apply' would write."
+    s = get_session(name)
+    if s is None: return J(error='No such dialog')
+    items, linked = [], 0
+    for m in s.dlg.messages:
+        info = s.src_info(m)
+        if not info: continue
+        linked += 1
+        if info['status'] == 'sync': continue
+        _, fsrc = so.status(m.meta['polya_src'], m.content or '', s.project)
+        items.append(dict(id=m.id, file=info['file'], qualname=info.get('qualname') or so.def_name(m.content) or 'new code', status=info['status'],
+                          label=info['label'], after=info.get('after', ''), diff=so.udiff(fsrc or '', m.content or '', info.get('qualname') or 'new code')))
+    return J(items=items, linked=linked, project=s.project or '')
+
+
+@rt('/d/{name}/symbols')
+def file_symbols(name: str, file: str = ''):
+    "For choosing where new code goes: the project's .py files, and the functions and classes in one of them."
+    s = get_session(name)
+    if s is None or not s.project: return J(files=[], symbols=[], error='Start Polya with --project to write code into files.')
+    root, files = Path(s.project), []
+    skip = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', '.tox', 'build', 'dist', '.mypy_cache'}
+    for dp, dns, fns in os.walk(root):
+        dns[:] = [d for d in dns if d not in skip and not d.startswith('.')]
+        files += [str(Path(dp, f).relative_to(root)) for f in fns if f.endswith('.py')]
+        if len(files) > 3000: break
+    syms = []
+    if file:
+        try: syms = so.symbols(so.resolve(file, s.project))
+        except so.SourceError: pass
+    return J(files=sorted(files), symbols=syms)
 
 
 @rt('/d/{name}/complete', methods=['POST'])

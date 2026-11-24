@@ -190,3 +190,30 @@ body.modkey .msg pre code, body.modkey .dbody pre code, body.modkey .CodeMirror-
 #banner { position: fixed; top: 46px; left: 50%; transform: translateX(-50%); background: var(--errbg); color: var(--errink); border-radius: 8px;
   padding: 6px 14px; font-size: 13px; z-index: 80; max-width: 80vw; }
 #banner[hidden] { display: none; }
+
+/* ---- cells linked to files */
+.f-src { font-family: var(--mono); color: var(--muted); max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.f-src b { font-family: var(--sans); font-weight: 600; }
+.s-sync .f-src b, span.s-sync { color: var(--ok); }
+.s-edited .f-src b, .s-new .f-src b, span.s-edited, span.s-new { color: var(--accent); }
+.s-disk .f-src b, span.s-disk { color: var(--warn); }
+.s-conflict .f-src b, .s-missing .f-src b, .s-nofile .f-src b, span.s-conflict, span.s-missing { color: var(--danger); }
+.msg.is-linked { border-left-style: double; border-left-width: 4px; }
+#modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: center; justify-content: center; z-index: 110; }
+#modal[hidden] { display: none; }
+.mbox { background: var(--panel); border-radius: 12px; padding: 18px 22px; width: min(900px, calc(100% - 32px)); max-height: 88vh; overflow-y: auto; }
+.mbox h2 { margin: 0 0 4px; font-size: 17px; font-family: var(--mono); word-break: break-all; }
+.mbox h3 { margin: 14px 0 4px; font: 600 13px var(--mono); }
+.mbtns { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.frow { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; }
+.frow input:not([type=checkbox]) { flex: 1; }
+pre.diff { font: 12.5px/1.5 var(--mono); background: var(--soft); border-radius: 6px; padding: 8px 10px; margin: 8px 0 0; overflow-x: auto; white-space: pre; }
+.diff .da { color: var(--ok); } .diff .dd { color: var(--danger); } .diff .dh { color: var(--muted); }
+.diff span { display: block; }
+.chglist details { border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; margin: 6px 0; font-size: 13px; }
+.chglist summary { cursor: pointer; }
+#ctxmenu { position: fixed; z-index: 120; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 22px rgba(0, 0, 0, .2); padding: 4px; }
+#ctxmenu[hidden] { display: none; }
+#ctxmenu button { border: 0; background: none; padding: 5px 12px; font-size: 13px; white-space: nowrap; }
+#ctxmenu button:hover { background: var(--soft); }
+.dmeta a { color: var(--accent); }

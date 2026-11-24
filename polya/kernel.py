@@ -13,7 +13,7 @@ RESULT_LIMIT = 5000
 STARTUP = """
 import ipyfuncs
 from polya.helper import *
-from polya.helper import _call_tool as __polya_call, _definition as __polya_def, _sandbox_run as __polya_sbx
+from polya.helper import _call_tool as __polya_call, _definition as __polya_def, _sandbox_run as __polya_sbx, _run_in_module as __polya_inmod
 """
 
 

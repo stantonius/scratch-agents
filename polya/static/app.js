@@ -73,13 +73,13 @@
         },
         'Shift-Tab': cm => cm.indentSelection('subtract'),
         'Cmd-/': 'toggleComment', 'Ctrl-/': 'toggleComment',
-        F12: cm => showDef(nameAt(cm.getValue(), cm.indexFromPos(cm.getCursor()))),
+        F12: cm => showDef(nameAt(cm.getValue(), cm.indexFromPos(cm.getCursor())), moduleOf(cm.getWrapperElement())),
       }, keys),
     });
     cm.on('mousedown', (cm, e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
-      showDef(nameAt(cm.getValue(), cm.indexFromPos(cm.coordsChar({left: e.clientX, top: e.clientY}))));
+      showDef(nameAt(cm.getValue(), cm.indexFromPos(cm.coordsChar({left: e.clientX, top: e.clientY}))), moduleOf(cm.getWrapperElement()));
     });
     return cm;
   }
@@ -154,7 +154,11 @@
     where.textContent = `${d.kind}${d.module ? ' in ' + d.module : ''}  ·  ${d.file ? d.file + ':' + d.line : 'no source file'}`;
     meta.append(where);
     if (d.note) { const n = document.createElement('div'); n.className = 'dnote'; n.textContent = d.note; meta.append(n); }
-    const hint = document.createElement('div'); hint.textContent = 'Ctrl+click a name in this source to follow it further.'; meta.append(hint);
+    const hint = document.createElement('div'); hint.textContent = 'Ctrl+click (or right-click) a name in this source to follow it further. ';
+    if (d.open) { const a = document.createElement('a'); a.href = d.open; a.textContent = 'Open in VS Code'; a.title = `Open ${d.file} at line ${d.line} in your editor`; hint.append(a); }
+    meta.append(hint);
+    $('#dcode').textContent = d.linkable ? 'Bring into dialog' : 'Insert as code';
+    $('#dcode').title = d.linkable ? 'Add this as a code cell linked to its file: run it, change it, see the diff, write it back' : 'Copy this source into a code cell';
     $('#dbody').innerHTML = d.html || '';
     if (!d.html && d.doc) { const p = document.createElement('pre'); p.textContent = d.doc; $('#dbody').append(p); }
     $('#dcode').disabled = $('#dnote').disabled = !d.source;
@@ -164,6 +168,11 @@
   async function insertDef(asNote) {
     const d = defCur;
     if (!d || !d.source) return;
+    if (!asNote && d.linkable) {       // a real function or class in a file: bring it in linked, not as a loose copy
+      const r = await post({op: 'add_source', file: d.file, qualname: d.qualname, after: selected || undefined});
+      if (r.id) { wantSelect = r.id; if (byId(r.id)) select(r.id); toast('Brought in, linked to ' + (d.rel || d.file)); }
+      return;
+    }
     const where = `${d.file || 'unknown file'}:${d.line}`;
     const content = asNote
       ? `Definition of \`${d.name}\` (${where}):\n\n\`\`\`python\n${d.source.replace(/\n$/, '')}\n\`\`\``
@@ -173,6 +182,119 @@
     const r = await post(body);
     if (r.id) { wantSelect = r.id; if (byId(r.id)) select(r.id); toast(asNote ? 'Added as a note' : 'Added as a code message (not run)'); }
   }
+
+  // ---------------------------------------------------------------- cells linked to files
+  const moduleOf = el => el.closest('.msg')?.querySelector('.f-src')?.dataset.module || '';
+  const modal = $('#modal'), mbox = $('#mbox');
+  function openModal(...nodes) { mbox.replaceChildren(...nodes); modal.hidden = false; }
+  function closeModal() { modal.hidden = true; mbox.replaceChildren(); }
+  function el(tag, props = {}, ...kids) { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; }
+  function diffNode(text) {
+    const pre = el('pre', {className: 'diff'});
+    if (!text) { pre.textContent = '(no differences)'; return pre; }
+    for (const line of text.split('\n')) {
+      const c = line.startsWith('+++') || line.startsWith('---') ? 'dh' : line.startsWith('@@') ? 'dh' : line.startsWith('+') ? 'da' : line.startsWith('-') ? 'dd' : '';
+      pre.append(el('span', {className: c, textContent: line + '\n'}));
+    }
+    return pre;
+  }
+  async function applyOne(id, force) {
+    const r = await post({op: 'src_apply', id, force});
+    if (r.written) toast('Written to ' + r.written);
+    return r;
+  }
+  // One cell: what would be written, with the buttons that act on it.
+  async function showDiff(id) {
+    const d = await post({op: 'src_diff', id});
+    if (d.error) return;
+    const btns = el('div', {className: 'mbtns'});
+    const can = ['edited', 'new', 'conflict'].includes(d.status);
+    if (can) btns.append(el('button', {className: 'primary', textContent: d.status === 'conflict' ? 'Overwrite the file with this cell' : 'Write to file',
+      onclick: async () => { const r = await applyOne(id, d.status === 'conflict'); if (!r.error) closeModal(); }}));
+    if (d.status !== 'new') btns.append(el('button', {textContent: "Revert cell to the file's version", onclick: async () => { await post({op: 'src_revert', id}); closeModal(); }}));
+    btns.append(el('button', {textContent: 'Close', onclick: closeModal}));
+    const note = {disk: 'The file changed after you brought this in. Nothing here needs writing; revert to take the new version.',
+                  conflict: 'Both the cell and the file changed since you brought this in. Read the diff before choosing.'}[d.status];
+    openModal(el('h2', {textContent: d.name}), el('div', {className: 'fine', textContent: d.label + (note ? ' — ' + note : '')}), diffNode(d.diff), btns);
+  }
+  // Every linked cell that differs from its file.
+  async function showChanges() {
+    const r = await fetch(base + '/changes').then(r => r.json());
+    const head = el('h2', {textContent: 'Changes to write back'});
+    if (!r.items.length) return openModal(head, el('p', {className: 'fine', textContent: r.linked ? `All ${r.linked} linked cells match their files.` : 'No cells in this dialog are linked to files yet. Ctrl+click a name and choose "Bring into dialog", or use "→ file…" on a code cell.'}), el('div', {className: 'mbtns'}, el('button', {textContent: 'Close', onclick: closeModal})));
+    const rows = [], files = {};
+    for (const it of r.items) (files[it.file] ||= []).push(it);
+    const list = el('div', {className: 'chglist'});
+    for (const [file, items] of Object.entries(files)) {
+      list.append(el('h3', {textContent: file}));
+      for (const it of items) {
+        const writable = ['edited', 'new'].includes(it.status);
+        const cb = el('input', {type: 'checkbox', checked: writable, disabled: !writable});
+        rows.push([cb, it]);
+        const where = it.status === 'new' ? ` (goes ${it.after ? 'after ' + it.after : 'at the end of the file'})` : '';
+        const go = el('a', {href: '#', textContent: 'show cell', onclick: e => { e.preventDefault(); closeModal(); select(it.id); }});
+        list.append(el('details', {open: items.length < 4}, el('summary', {}, cb, el('b', {textContent: ' ' + it.qualname}), el('span', {className: 's-' + it.status, textContent: ' · ' + it.label + where + ' '}), go), diffNode(it.diff)));
+      }
+    }
+    const apply = el('button', {className: 'primary', textContent: 'Write selected to files', onclick: async () => {
+      let n = 0;
+      for (const [cb, it] of rows) if (cb.checked) { const x = await post({op: 'src_apply', id: it.id}); if (x.error) break; n++; }
+      if (n) toast(`Wrote ${n} change${n === 1 ? '' : 's'}`);
+      showChanges();
+    }});
+    openModal(head, el('div', {className: 'fine', textContent: `Project: ${r.project || '(none: start Polya with --project)'}. Ticked items are written exactly as shown. Conflicts and files that changed on disk are never written from here; open the cell to decide.`}), list, el('div', {className: 'mbtns'}, apply, el('button', {textContent: 'Close', onclick: closeModal})));
+  }
+  // New code has no place in a file until you give it one.
+  async function chooseTarget(id) {
+    const info = await fetch(base + '/symbols').then(r => r.json());
+    if (info.error) return toast(info.error);
+    // Sensible default: the same file as the nearest linked cell above, right after that function.
+    let dfile = '', dafter = '';
+    for (let e = byId(id)?.previousElementSibling; e; e = e.previousElementSibling) {
+      const f = e.querySelector('.f-src');
+      if (f) { const [file, what] = f.textContent.split(' · '); dfile = file; dafter = /^(after |end of file)/.test(what) ? '' : what; break; }
+    }
+    const dl = el('datalist', {id: 'pyfiles'}, ...info.files.map(f => el('option', {value: f})));
+    const file = el('input', {value: dfile, placeholder: 'path/inside/project.py', size: 50}); file.setAttribute('list', 'pyfiles');
+    const after = el('select'), create = el('input', {type: 'checkbox'});
+    const fill = async () => {
+      const r = await fetch(`${base}/symbols?file=${encodeURIComponent(file.value)}`).then(r => r.json());
+      after.replaceChildren(el('option', {value: '', textContent: 'at the end of the file'}), ...r.symbols.map(q => el('option', {value: q, textContent: 'after ' + q + (q.includes('.') ? '  (inside the class)' : '')})));
+      if (r.symbols.includes(dafter)) after.value = dafter;
+    };
+    file.onchange = fill; await fill();
+    const save = el('button', {className: 'primary', textContent: 'Set destination', onclick: async () => {
+      const r = await post({op: 'src_target', id, file: file.value.trim(), after: after.value, create: create.checked});
+      if (!r.error) { closeModal(); toast('Destination set. Nothing is written until you apply it.'); }
+    }});
+    openModal(el('h2', {textContent: 'Where should this code go?'}),
+      el('p', {className: 'fine', textContent: 'This only records the destination on the cell. The file is written when you choose "→ file" or use Changes.'}),
+      el('label', {className: 'frow'}, 'File ', file, dl), el('label', {className: 'frow'}, 'Position ', after),
+      el('label', {className: 'frow'}, create, ' create the file if it does not exist'),
+      el('div', {className: 'mbtns'}, save, el('button', {textContent: 'Unlink from file', onclick: async () => { await post({op: 'src_unlink', id}); closeModal(); }}), el('button', {textContent: 'Cancel', onclick: closeModal})));
+    file.focus();
+  }
+  // Right-click a name -> Go to definition, as in an editor.
+  const ctx = $('#ctxmenu');
+  function showCtx(x, y, name, mod) {
+    if (!name) return false;
+    ctx.replaceChildren(el('button', {textContent: `Go to definition of ${name.length > 40 ? '…' + name.slice(-40) : name}`, onclick: () => { ctx.hidden = true; showDef(name, mod); }}));
+    ctx.style.left = Math.min(x, innerWidth - 320) + 'px'; ctx.style.top = y + 'px'; ctx.hidden = false;
+    return true;
+  }
+  document.addEventListener('click', () => { ctx.hidden = true; });
+  document.addEventListener('contextmenu', e => {
+    const cmEl = e.target.closest('.CodeMirror');
+    if (cmEl && cmEl.CodeMirror.getOption('mode') === 'python') {
+      const cm = cmEl.CodeMirror;
+      if (showCtx(e.clientX, e.clientY, nameAt(cm.getValue(), cm.indexFromPos(cm.coordsChar({left: e.clientX, top: e.clientY}))), moduleOf(cmEl))) e.preventDefault();
+      return;
+    }
+    const pre = e.target.closest('#msgs pre, #dbody pre');
+    if (!pre || e.target.closest('.o-stream, .o-error, .o-result')) return;
+    const mod = pre.closest('#dbody') ? (defCur && defCur.module) || '' : moduleOf(pre);
+    if (showCtx(e.clientX, e.clientY, nameAtPoint(pre, e.clientX, e.clientY), mod)) e.preventDefault();
+  });
 
   // ---------------------------------------------------------------- bottom editor
   const hints = {
@@ -238,6 +360,9 @@
     if (name === 'up' || name === 'down') return post({op: 'move', id, dir: name});
     if (name === 'delete') return copy(id, true);
     if (name === 'clear') return post({op: 'clear', id});
+    if (name === 'diff' || name === 'apply') return showDiff(id);
+    if (name === 'revert') { if (confirm("Throw away this cell's changes and take the file's version again?")) await post({op: 'src_revert', id}); return; }
+    if (name === 'tofile') return chooseTarget(id);
   }
   async function addNear(where) {
     const body = {op: 'add', type: 'code', content: ''};
@@ -357,7 +482,7 @@
     if (b) { select(m.dataset.id, false); act(b.dataset.act, m.dataset.id); return; }
     if ((e.ctrlKey || e.metaKey) && e.target.closest('pre') && !e.target.closest('.editor')) {
       e.preventDefault();
-      return showDef(nameAtPoint(e.target.closest('pre'), e.clientX, e.clientY));
+      return showDef(nameAtPoint(e.target.closest('pre'), e.clientX, e.clientY), moduleOf(e.target));
     }
     if (e.target.closest('.editor, a, summary, details')) return;
     if (selected === m.dataset.id && !editing && !window.getSelection().toString() && e.target.closest('.min')) return startEdit(m.dataset.id);
@@ -372,6 +497,8 @@
   document.addEventListener('keydown', e => {
     const help = $('#help');
     if (!help.hidden) { if (e.key === 'Escape' || e.key === '?') { help.hidden = true; e.preventDefault(); } return; }
+    if (e.key === 'Escape' && !modal.hidden) { closeModal(); e.preventDefault(); return; }
+    if (!modal.hidden) return;
     if (e.key === 'Escape' && !$('#defn').hidden && !e.target.closest('.CodeMirror')) { closeDef(); e.preventDefault(); return; }
     const mod = e.ctrlKey || e.metaKey;
     const typeKey = {KeyJ: 'code', KeyK: 'note', KeyL: 'prompt'}[e.code];
@@ -446,6 +573,8 @@
   $('#helpbtn').onclick = () => { $('#help').hidden = false; };
   $('#helpclose').onclick = () => { $('#help').hidden = true; };
   $('#help').onclick = e => { if (e.target.id === 'help') e.target.hidden = true; };
+  $('#chgbtn').onclick = showChanges;
+  modal.onclick = e => { if (e.target === modal) closeModal(); };
   $('#sidetoggle').onclick = () => {
     const s = $('#side'); s.hidden = !s.hidden;
     try { localStorage.setItem('polya-side', s.hidden ? '' : '1'); } catch (e) {}

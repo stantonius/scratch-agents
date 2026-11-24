@@ -15,4 +15,5 @@ echo "== tests/e2e/04_codebase.js"; node tests/e2e/04_codebase.js "$SHOTS" "$TMP
 echo "== tests/e2e/05_sandbox.js"; node tests/e2e/05_sandbox.js "$SHOTS"; rm -f ~/polya_written_by_ai*.txt
 echo "== tests/e2e/06_bulk_runs.js"; node tests/e2e/06_bulk_runs.js
 echo "== tests/e2e/07_other_dialogs.js"; node tests/e2e/07_other_dialogs.js
+echo "== tests/e2e/08_roundtrip.js"; rm -rf "$TMP/proj/acme"; cp -r tests/sample_project/acme "$TMP/proj/acme"; node tests/e2e/08_roundtrip.js "$TMP/proj" "$SHOTS"
 echo "Screenshots in $SHOTS"
