@@ -109,6 +109,39 @@ def test_writing_the_same_thing_twice_changes_nothing():
     assert (root / 'm.py').read_bytes() == once
 
 
+def test_lines_you_did_not_change_inside_the_function_are_kept_exactly():
+    # trailing spaces, a blank line that holds indentation, and an oddly indented comment: none are yours to change
+    before = b'def a(x):   \n    y = x + 1  \n    \n      # odd comment\n    z = y * 2\n    return z\n\n\ndef b(): pass\n'
+    root = proj({'m.py': before})
+    lk, src = so.link(root / 'm.py', 'a', root)
+    so.apply(lk, src, root)
+    assert (root / 'm.py').read_bytes() == before                      # unchanged cell: identical file
+    so.apply(lk, src.replace('z = y * 2', 'z = y * 3'), root)
+    assert (root / 'm.py').read_bytes() == before.replace(b'z = y * 2', b'z = y * 3')    # one line changed: one line differs
+
+
+def test_text_inside_a_multiline_string_is_not_reindented():
+    before = b'class K:\n    def q(self):\n        return """\nSELECT *\n  FROM t   \n"""\n\n    def n(self):\n        return 2\n'
+    root = proj({'m.py': before})
+    lk, src = so.link(root / 'm.py', 'K.q', root)                       # a string line at column 0 inside a method
+    assert src.split('\n')[0] == 'def q(self):' and 'SELECT *' in src
+    so.one_def(src)
+    so.apply(lk, src, root)
+    assert (root / 'm.py').read_bytes() == before
+    lk2, _ = so.apply(lk, src.replace('def q(self):', 'def q(self, extra=None):'), root)
+    assert (root / 'm.py').read_bytes() == before.replace(b'def q(self):', b'def q(self, extra=None):')
+
+
+def test_added_and_removed_lines_leave_their_neighbours_alone():
+    before = b'def a(x):\n    one = 1  \n    two = 2  \n    return one + two\n'
+    root = proj({'m.py': before})
+    lk, src = so.link(root / 'm.py', 'a', root)
+    lk2, body = so.apply(lk, src.replace('    two = 2  \n', '    two = 2  \n    three = 3\n'), root)
+    assert (root / 'm.py').read_bytes() == b'def a(x):\n    one = 1  \n    two = 2  \n    three = 3\n    return one + two\n'
+    so.apply(lk2, body.replace('    one = 1  \n', ''), root)
+    assert (root / 'm.py').read_bytes() == b'def a(x):\n    two = 2  \n    three = 3\n    return one + two\n'
+
+
 # ---------------------------------------------------------------- finding the right thing
 def test_decorators_belong_to_the_function():
     before = b'import functools\n\n\n@functools.cache\n@staticmethod\ndef a(x):\n    return x + 1\n\n\ndef b(): pass\n'

@@ -125,7 +125,9 @@ def find(path, qualname):
     start = min([node.lineno] + [d.lineno for d in node.decorator_list])
     block = f['lines'][start - 1:node.end_lineno]
     indent = block[0][:len(block[0]) - len(block[0].lstrip())]
-    return dict(start=start, end=node.end_lineno, indent=indent, source=textwrap.dedent('\n'.join(block)))
+    # Take the definition's own indentation off each line that has it. A line that does not (text inside a
+    # multi-line string, say) is left exactly as it is.
+    return dict(start=start, end=node.end_lineno, indent=indent, source='\n'.join(l[len(indent):] if l.startswith(indent) else l for l in block))
 
 
 def def_name(code):
@@ -141,7 +143,7 @@ def split_imports(code):
     A cell may begin with the imports its code needs. They belong at the top of the file, not next to
     the function, so write-back handles the two parts separately.
     """
-    code = norm(textwrap.dedent(code))
+    code = '\n'.join(_cell_lines(textwrap.dedent(code)))       # as typed: trailing whitespace on a line is the author's business
     try: tree = ast.parse(code)
     except SyntaxError: return [], code
     lead = []
@@ -152,7 +154,7 @@ def split_imports(code):
     lines = code.splitlines()
     first = tree.body[len(lead)]
     start = min([first.lineno] + [d.lineno for d in getattr(first, 'decorator_list', [])])
-    return [ast.unparse(n) for n in lead], norm('\n'.join(lines[start - 1:]))
+    return [ast.unparse(n) for n in lead], '\n'.join(lines[start - 1:])
 
 
 def missing_imports(path, imports):
@@ -207,9 +209,17 @@ def udiff(old, new, name):
     return '\n'.join(d)
 
 
-def _indented(code, prefix):
-    "The code's lines, each given the leading whitespace `prefix` (the file's own: tabs stay tabs)."
-    return [prefix + l if l.strip() else '' for l in norm(textwrap.dedent(code)).splitlines()]
+def _cell_lines(code):
+    "A cell's lines as typed: line endings unified, blank lines at the very start and end dropped, nothing else touched."
+    lines = _split(code)[0]
+    while lines and not lines[-1].strip(): lines.pop()
+    while lines and not lines[0].strip(): lines.pop(0)
+    return lines
+
+
+def _indented(lines, prefix):
+    "Lines given the leading whitespace `prefix` (the file's own: tabs stay tabs). Blank lines stay empty."
+    return [prefix + l if l.strip() else '' for l in lines]
 
 
 def one_def(code):
@@ -250,7 +260,7 @@ def apply(src, content, project, force=False):
         while at > 0 and at <= len(rows) and not rows[at - 1].strip(): at -= 1     # do not stack blank lines
         if at > 0 and not _NL.search(rows[at - 1][-2:]): rows[at - 1] += nl          # the file did not end with a newline
         gap = [] if at == 0 else [nl] if indent else [nl, nl]
-        code = [r + nl for r in _indented(content, indent)]
+        code = [r + nl for r in _indented(_cell_lines(content), indent)]
         tail = rows[at:] if any(r.strip() for r in rows[at:]) else []                # at the very end, leave no stray blank lines
         rows = rows[:at] + gap + code + tail
         qual = (after.split('#')[0].rsplit('.', 1)[0] + '.' if indent and '.' in after else '') + name
@@ -259,8 +269,14 @@ def apply(src, content, project, force=False):
         if t is None: raise SourceError(f'`{src["qualname"]}` is no longer in {path}.')
         if not force and sha(t['source']) != src.get('sha'):
             raise SourceError(f'{path} changed since this cell was linked. Look at the diff, then revert the cell or apply again to overwrite the file.')
-        code = [r + nl for r in _indented(content, t['indent'])]
-        if t['end'] == len(rows) and not f['ends'][-1]: code[-1] = code[-1][:-len(nl)]    # keep "no newline at end of file"
+        # Line by line against what the file has now. A line you did not change is kept exactly as the file has it
+        # (its trailing whitespace, its indentation, its line ending). Only changed and added lines are written.
+        old_rows, old, new = rows[t['start'] - 1:t['end']], _split(t['source'])[0], _cell_lines(content)
+        code = []
+        for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, [l.rstrip() for l in old], [l.rstrip() for l in new], autojunk=False).get_opcodes():
+            code += old_rows[i1:i2] if op == 'equal' else [r + nl for r in _indented(new[j1:j2], t['indent'])]
+        if code and not _NL.search(code[-1][-2:]): code[-1] += nl                               # a kept last line that had no ending
+        if t['end'] == len(rows) and not f['ends'][-1]: code[-1] = code[-1].rstrip('\r\n')    # keep "no newline at end of file"
         rows = rows[:t['start'] - 1] + code + rows[t['end']:]
         base = src['qualname'].split('#')[0]
         qual = src['qualname'] if base.rsplit('.', 1)[-1] == name else (base.rsplit('.', 1)[0] + '.' if '.' in base else '') + name

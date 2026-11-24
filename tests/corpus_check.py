@@ -1,6 +1,9 @@
 """Run write-back over a large body of real Python and check it never touches anything it should not.
 
-    python tests/corpus_check.py [folder ...]      (default: the standard library and installed packages)
+    python tests/corpus_check.py [--minutes N] [folder ...]
+
+Default folders: the standard library and installed packages. Default budget: 10 minutes; when it runs
+out the check stops and reports on what it covered. Progress is printed as it goes.
 
 Files are copied to a temporary folder first; nothing outside it is written. For every function, class
 and method in every file:
@@ -67,14 +70,20 @@ def check_file(root, rel, rng, stats, problems):
             if path.read_bytes() != original: path.write_bytes(original)
 
 
-def main(folders):
+def main(folders, minutes=10):
     rng, stats, problems, t0 = random.Random(0), Counter(), [], time.time()
+    deadline, out_of_time = t0 + minutes * 60, False
     tmp = Path(tempfile.mkdtemp())
     for n, folder in enumerate(folders):
         root = tmp / f'c{n}'
         shutil.copytree(folder, root, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.so', 'node_modules'), symlinks=False, ignore_dangling_symlinks=True)
-        for path in sorted(root.rglob('*.py')):
+        paths = sorted(root.rglob('*.py'))
+        rng.shuffle(paths)             # so a run cut short by the budget still covers a spread of packages
+        print(f'{folder}: {len(paths):,} files', flush=True)
+        for path in paths:
+            if time.time() > deadline: out_of_time = True; break
             stats['files'] += 1
+            if stats['files'] % 250 == 0: print(f"  {stats['files']:,} files, {stats['symbols']:,} symbols, {stats['round trips']:,} round trips, {len(problems)} problems, {time.time() - t0:.0f}s", flush=True)
             ends = Counter(e for e in so._split(path.read_bytes().decode('latin-1'))[1] if e)
             if '\r\n' in ends: stats['files with CRLF'] += 1
             if path.read_bytes()[:3] == b'\xef\xbb\xbf': stats['files with a BOM'] += 1
@@ -85,10 +94,11 @@ def main(folders):
     kinds = Counter(p[2].split(':')[0] for p in problems)
     print(f'{len(problems):>8,}  problems' + ''.join(f'\n            {v:>5,}  {k}' for k, v in kinds.most_common(8)))
     for rel, q, why in problems[:12]: print(f'     {rel} :: {q}: {why}')
-    print(f'{time.time() - t0:.0f}s')
+    print(f'{time.time() - t0:.0f}s' + (f'  (stopped at the {minutes}-minute budget: not every file was reached)' if out_of_time else '  (every file reached)'))
     return 1 if problems else 0
 
 
 if __name__ == '__main__':
-    args = [Path(a) for a in sys.argv[1:]] or [Path(sysconfig.get_paths()['stdlib']), Path(sysconfig.get_paths()['purelib'])]
-    sys.exit(main(args))
+    argv, minutes = sys.argv[1:], 10
+    if '--minutes' in argv: i = argv.index('--minutes'); minutes = float(argv[i + 1]); del argv[i:i + 2]
+    sys.exit(main([Path(a) for a in argv] or [Path(sysconfig.get_paths()['stdlib']), Path(sysconfig.get_paths()['purelib'])], minutes))

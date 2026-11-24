@@ -127,10 +127,10 @@ no arguments only works once it is written to the file.
   sides and choose to overwrite or revert.
 - Only files inside `--project` can be written. Library code can be brought in to read and
   experiment with, but not written.
-- **Only that function's lines change.** Every other byte of the file is left alone: its line
-  endings (new lines use the file's own, so a Windows-style file stays that way), its encoding
-  and byte-order mark, tabs versus spaces, trailing whitespace on other lines, and whether the
-  file ends with a newline.
+- **Only the lines you changed are written.** Within the function, every line you left alone is
+  kept exactly as the file has it, down to trailing whitespace. Outside it, every byte is left
+  alone: line endings (new lines use the file's own, so a Windows-style file stays that way),
+  encoding and byte-order mark, tabs versus spaces, and whether the file ends with a newline.
 - A cell written to a file must hold exactly one function or class (imports may come first).
   Anything else is refused with a message, as is any write that would leave the file
   unparseable.
@@ -397,7 +397,11 @@ autoreload, both modes, the agent endpoint through an MCP client (`tests/agent_b
 bulk runs (no prompt is re-sent; a prompt with an edited reply is locked), editing another dialog (and the refusals: running code there, changing `SETUP`), and the sandbox: what the `python` and `bash` tools can do, what is blocked (network,
 subprocesses, writes outside `/tmp`, `curl`, `rm`), blocked calls becoming cells, and widening.
 
-`tests/test_source.py` (no server needed: `python tests/test_source.py`) holds 28 edge cases for
+`tests/corpus_check.py` runs write-back over a large body of real Python (by default the
+standard library and installed packages, copied to a temporary folder) and checks that every
+function, class and method can be located, that writing one back unchanged leaves its file
+byte-identical, and that a rename changes only that symbol's lines and can be undone exactly.
+`tests/test_source.py` (no server needed: `python tests/test_source.py`) holds 31 edge cases for
 write-back: line endings, encodings, tabs, decorators, duplicate names, definitions under
 `if`/`try`, imports, new code, and every refusal. The round trip (`tests/e2e/08_roundtrip.js`) covers bringing code in, running it inside its
 module with autoreload on, every status, diff, write-back, revert, conflicts, new functions
