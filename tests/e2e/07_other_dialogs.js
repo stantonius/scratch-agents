@@ -33,7 +33,7 @@ const { chromium } = require('playwright');
   log('5 alpha itself unchanged', (await cells(alpha)).filter(c => !c.startsWith('prompt')));
   log('6 run in another dialog refused', await ask('add_msg', { content: 'print("x")', msg_type: 'code', run: true, dialog: 'beta' }));
   log('7 unknown dialog', await ask('view_dlg', { dialog: 'nope' }));
-  await alpha.goto('http://127.0.0.1:5001/'); await alpha.click('.setupform button'); await alpha.waitForURL(/SETUP/); await alpha.goBack(); await alpha.goBack(); await alpha.waitForSelector('#composer');
+  await alpha.evaluate(() => fetch('/setup', { method: 'POST' }));   // make sure SETUP exists (a no-op if an earlier test created it)
   log('8 SETUP is off limits to the AI', await ask('add_msg', { content: 'import os; os.system("echo owned")', msg_type: 'code', dialog: 'SETUP' }));
   log('8 AI may still read SETUP', (await ask('view_dlg', { dialog: 'SETUP' })).slice(0, 40));
   const added = (await cells(beta)).length;
