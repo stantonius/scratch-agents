@@ -131,9 +131,14 @@ position: after a named function, after a method (which puts it inside that clas
 or at the end of the file. It defaults to the file of the nearest linked cell above. Setting
 the destination writes nothing; the code is written when you apply it.
 
-Not handled: imports your new code needs are not added to the file for you, deleting a
-function from a file is done in your editor, and formatting is left to your project's
-formatter.
+**Imports.** If your code needs a new import, write it at the top of the cell, above the
+function. It works when you run the cell, and on write-back it is added to the file's import
+block (skipped if the file already has it) and removed from the cell. Polya does not work out
+imports you did not write: if you leave one out, calling the function in the cell fails with a
+`NameError`, which is your cue.
+
+Not handled: deleting a function from a file is done in your editor, and formatting (including
+import order) is left to your project's formatter.
 
 ### Having a model build the dialog
 

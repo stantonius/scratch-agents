@@ -72,6 +72,15 @@ class Session:
         st, _ = so.status(src, m.content or '', self.project)
         return dict(src, status=st, label=so.LABELS[st])
 
+    def src_diff(self, m, fsrc):
+        "What writing `m` back would change: the function's diff, plus any imports that would go to the top of the file."
+        src = m.meta['polya_src']
+        imports, body = so.split_imports(m.content or '')
+        try: imports = so.missing_imports(so.resolve(src['file'], self.project), imports)
+        except so.SourceError: pass
+        head = ''.join(f'+ {i}    (added to the imports at the top of {src["file"]})\n' for i in imports)
+        return head + so.udiff(fsrc or '', body, src.get('qualname') or 'new code')
+
     async def add_source(self, symbol, file='', after=None):
         "Add a code message holding `symbol`'s source, copied from its file and linked to it."
         symbol, file, module = (symbol or '').strip(), (file or '').strip(), ''
@@ -525,14 +534,14 @@ async def do(name: str, req):
             name = f"{src['file']} :: {src.get('qualname') or so.def_name(m.content) or 'new code'}"
             if op == 'src_diff':
                 where = f" (new: goes {'after ' + src['after'] if src.get('after') else 'at the end of the file'})" if st == 'new' else ''
-                return J(status=st, label=so.LABELS[st], name=name + where, diff=so.udiff(fsrc or '', m.content or '', src.get('qualname') or 'new code'))
+                return J(status=st, label=so.LABELS[st], name=name + where, diff=s.src_diff(m, fsrc))
             if op == 'src_revert':
                 if fsrc is None: return J(error='There is no version in the file to go back to.')
                 m.content, m.output = fsrc, []
                 src['sha'] = so.sha(fsrc); m.meta.pop('polya_by', None)
                 s.changed(m); s.spawn(s.run_code(m))     # put the file's version back in memory too
                 return J(ok=True)
-            m.meta['polya_src'] = so.apply(src, m.content or '', s.project, force=bool(b.get('force')))
+            m.meta['polya_src'], m.content = so.apply(src, m.content or '', s.project, force=bool(b.get('force')))
             m.meta.pop('polya_by', None)
             s.changed(m)
             for o in s.dlg.messages:      # other cells linked to the same file may have moved or changed status
@@ -614,7 +623,7 @@ def changes(name: str):
         if info['status'] == 'sync': continue
         _, fsrc = so.status(m.meta['polya_src'], m.content or '', s.project)
         items.append(dict(id=m.id, file=info['file'], qualname=info.get('qualname') or so.def_name(m.content) or 'new code', status=info['status'],
-                          label=info['label'], after=info.get('after', ''), diff=so.udiff(fsrc or '', m.content or '', info.get('qualname') or 'new code')))
+                          label=info['label'], after=info.get('after', ''), diff=s.src_diff(m, fsrc)))
     return J(items=items, linked=linked, project=s.project or '')
 
 

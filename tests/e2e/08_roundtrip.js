@@ -82,6 +82,18 @@ const proj = process.argv[2], shots = process.argv[3];
   require('child_process').execSync(`python -c "import ast,sys; [ast.parse(open(f).read()) for f in sys.argv[1:]]" ${proj}/acme/pricing.py ${proj}/acme/orders.py`);
   log('9 both files still parse', true);
 
+  // an import written at the top of a cell goes to the file's import block, not next to the function
+  await p.click(cellOf('discount') + ' .mhead'); await p.keyboard.press('Enter'); await p.waitForSelector(cellOf('discount') + ' .editor .CodeMirror');
+  await p.$eval(cellOf('discount') + ' .editor .CodeMirror', e => e.CodeMirror.setValue('import math\n\n' + e.CodeMirror.getValue().replace('round(amount * 0.9, 2)', 'math.floor(amount * 0.9)')));
+  await p.keyboard.press('Control+Enter'); await p.waitForTimeout(700); await idle();
+  await type('code', 'from acme.pricing import discount\ndiscount(101)'); log('11 import in the cell works when run', await lastOut());
+  await p.click('#chgbtn'); await p.waitForSelector('#modal:not([hidden]) .chglist');
+  log('11 diff says where the import goes', (await p.$eval('.chglist pre.diff', e => e.innerText)).split('\n')[0]);
+  await p.click('#modal button.primary'); await p.waitForFunction(() => /match their files/.test(document.querySelector('#mbox').innerText)); await p.click('#modal .mbtns button:last-child');
+  const pf = read('acme/pricing.py').split('\n');
+  log('11 import at top of file, not by the function', [pf.indexOf('import math') < pf.findIndex(l => l.startsWith('TAX')), pf[pf.findIndex(l => l.startsWith('def discount')) - 1] === '']);
+  log('11 cell now holds just the function, in sync', [(await p.$eval(cellOf('discount') + ' .min', e => e.innerText)).split('\n')[0], (await linked()).filter(l => /discount/.test(l))]);
+
   // the notebook's AI brings code in by name; Polya does the copying
   await p.check('#dtools');
   await type('prompt', 'show me [[call add_source {"symbol": "Order.subtotal", "file": "acme/orders.py"}]]');

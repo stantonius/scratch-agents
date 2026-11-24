@@ -97,6 +97,48 @@ def def_name(code):
     return next((n.name for n in tree.body if isinstance(n, DEFS)), '')
 
 
+def split_imports(code):
+    """(imports, rest): the import statements a cell starts with, and the code after them.
+
+    A cell may begin with the imports its code needs. They belong at the top of the file, not next to
+    the function, so write-back handles the two parts separately.
+    """
+    code = norm(textwrap.dedent(code))
+    try: tree = ast.parse(code)
+    except SyntaxError: return [], code
+    lead = []
+    for n in tree.body:
+        if isinstance(n, (ast.Import, ast.ImportFrom)): lead.append(n)
+        else: break
+    if not lead or len(lead) == len(tree.body): return [], code
+    lines = code.splitlines()
+    first = tree.body[len(lead)]
+    start = min([first.lineno] + [d.lineno for d in getattr(first, 'decorator_list', [])])
+    return [ast.unparse(n) for n in lead], norm('\n'.join(lines[start - 1:]))
+
+
+def missing_imports(path, imports):
+    "Those of `imports` (statements as text) that the file does not already have at its top level."
+    if not imports: return []
+    have = {ast.dump(n) for n in parsed(path)[1].body if isinstance(n, (ast.Import, ast.ImportFrom))}
+    return [i for i in imports if ast.dump(ast.parse(i).body[0]) not in have]
+
+
+def _add_imports(lines, imports):
+    "Insert import statements after the file's last top-level import (or its docstring, or at the top)."
+    if not imports: return lines
+    tree = ast.parse('\n'.join(lines) or '\n')
+    last = [n.end_lineno for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+    if last: at = max(last)
+    else:
+        doc = tree.body[0] if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(getattr(tree.body[0], 'value', None), ast.Constant) \
+            and isinstance(tree.body[0].value.value, str) else None
+        at = doc.end_lineno if doc else 0
+    tail = lines[at:]
+    pad = [''] if not last and tail and tail[0].strip() else []
+    return lines[:at] + imports + pad + tail
+
+
 def link(path, qualname, project):
     "A new link for an existing symbol, plus its source."
     f = find(path, qualname)
@@ -111,8 +153,9 @@ def status(src, content, project):
     try: f = find(path, src['qualname'])
     except SourceError: return 'nofile', None
     if f is None: return 'missing', None
-    fs, cs, base = sha(f['source']), sha(content), src.get('sha')
-    if fs == cs: return 'sync', f['source']
+    imports, body = split_imports(content)
+    fs, cs, base = sha(f['source']), sha(body), src.get('sha')
+    if fs == cs and not missing_imports(path, imports): return 'sync', f['source']
     if fs == base: return 'edited', f['source']
     if cs == base: return 'disk', f['source']
     return 'conflict', f['source']
@@ -132,7 +175,9 @@ def apply(src, content, project, force=False):
     """Write a linked cell back to its file. Returns the updated link.
 
     Refuses if the file's version changed since the cell was linked (unless `force`), and refuses
-    anything outside the project folder.
+    anything outside the project folder. Imports the cell starts with are added to the file's import
+    block (if not already there) rather than written next to the function. Returns (link, content):
+    the content is the cell's code without those imports, which is what the cell should now hold.
     """
     path = resolve(src['file'], project)
     if not in_project(path, project): raise SourceError(f'{path} is outside the project folder, so Polya will not write to it.')
@@ -140,6 +185,8 @@ def apply(src, content, project, force=False):
     except SyntaxError as e: raise SourceError(f'The cell does not parse, so it was not written: {e}') from None
     text, _ = parsed(path)
     lines = text.splitlines()
+    imports, content = split_imports(content)
+    imports = missing_imports(path, imports)
     if src.get('kind') == 'new':
         after, indent, at = src.get('after') or '', 0, len(lines)
         if after:
@@ -160,5 +207,9 @@ def apply(src, content, project, force=False):
         new = lines[:f['start'] - 1] + _indented(content, f['indent']) + lines[f['end']:]
         name = def_name(content)
         qual = (src['qualname'].rsplit('.', 1)[0] + '.' if '.' in src['qualname'] else '') + name if name else src['qualname']
-    Path(path).write_text('\n'.join(new) + '\n', encoding='utf8')
-    return dict(file=src['file'], qualname=qual or src.get('qualname', ''), module=src.get('module') or module_name(path, project), sha=sha(content), kind='existing')
+    new = _add_imports(new, imports)
+    out = '\n'.join(new) + '\n'
+    try: ast.parse(out)
+    except SyntaxError as e: raise SourceError(f'Writing this would leave {path} unparseable ({e}), so nothing was written.') from None
+    Path(path).write_text(out, encoding='utf8')
+    return dict(file=src['file'], qualname=qual or src.get('qualname', ''), module=src.get('module') or module_name(path, project), sha=sha(content), kind='existing'), content
