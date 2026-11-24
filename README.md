@@ -210,7 +210,7 @@ refuse work whose evidence is not in the dialog.
 | `POLYA_API` | Wire format: `openai_chat` (default with a base URL; what LiteLLM proxies and most gateways speak), `openai` (Responses API), `anthropic`, or `gemini`. |
 | `POLYA_CTX_TOKENS` | Context window to fit the dialog into (default 200000). Oldest unpinned messages drop out first. |
 | `POLYA_MAX_TOKENS`, `POLYA_MAX_STEPS` | Reply length (4096) and maximum tool rounds per prompt (12). |
-| `POLYA_TOOL_CHARS` | Most text one tool call may hand back to the AI (20000 characters, about 500 lines of code). Longer results are cut with a note saying how much was dropped. |
+| `POLYA_TOOL_CHARS` | Ceiling on the text one tool call may hand back to the AI (20000 characters). A longer result keeps its start and end and loses the middle, with a note. The code-reading tools are designed to stay far below it. |
 | `POLYA_KERNEL` | Jupyter kernelspec for code (default `py` = ipymini; `python3` = ipykernel if you have it). |
 
 Without `POLYA_BASE_URL`, the model name decides the provider (e.g. a `claude-…` model uses
@@ -292,9 +292,20 @@ defaults:
   `sandbox_cmds('pytest', 'curl')`, `sandbox_dirs('./scratch')`, `sandbox_allow(my_function)`.
 
 **Asking about the codebase.** With the code tools on, the AI can answer "what is Y for?" or
-"why was X built this way?" by searching and reading the repository: `rg`/`grep`/`find` to
-locate things, `cat`/`head`/`tail` to read them, and `git log`, `git blame` and `git show` for
-the history behind them. It has no network, so pull-request discussions, tickets and wikis are
+"why was X built this way?" by searching and reading the repository. It has four read-only
+tools built to return the part that answers the question rather than whole files:
+
+| Tool | Returns |
+|---|---|
+| `search_code(pattern, path, glob, max_results)` | Matching lines as `file:line: text`, 40 by default, then the total number of matches and files |
+| `outline(file)` | Each class, function and method with its line range, signature and one-line description — the shape of a file without its code |
+| `source_of(name)` | One function, class or module, as loaded |
+| `read_lines(file, start, count)` | A numbered range of lines, 80 by default, 400 at most |
+
+They are preloaded, so you can call them from a cell too. For the history behind code it uses
+`bash` with `git log`, `git blame` and `git show`. The AI is told to ask for the smallest thing
+that answers the question; `POLYA_TOOL_CHARS` is only a ceiling, and a result over it loses its
+middle, keeping the start and the end. It has no network, so pull-request discussions, tickets and wikis are
 out of reach: paste what matters into a note. Start-up prints whether `rg` was found, and the
 AI is told which search tool it has.
 

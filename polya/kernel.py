@@ -94,7 +94,7 @@ class Kernel:
         try: res = await kc.eval('__polya_call', name, args, timeout_=3600)
         finally: self.busy -= 1
         res = res if isinstance(res, str) else repr(res)
-        return res if len(res) <= RESULT_LIMIT else res[:RESULT_LIMIT] + f'… [truncated, {len(res) - RESULT_LIMIT} more chars]'
+        return res if len(res) <= RESULT_LIMIT * 1.1 else res[:RESULT_LIMIT] + f'… [cut: {len(res) - RESULT_LIMIT:,} more characters]'    # backstop; the kernel side clips first
 
     async def user_items(self):
         "(variables, functions) defined by the user, for the sidebar."

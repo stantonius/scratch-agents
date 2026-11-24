@@ -12,6 +12,7 @@ from fastllm.acomplete import acomplete
 from fastllm.responses import response_input
 
 from . import tools as dtools
+from .helper import CODE_TOOLS
 from .dialogs import set_reply, settings
 from .kernel import RESULT_LIMIT, has_rg
 
@@ -87,9 +88,10 @@ SANDBOX_SP = """The `python` and `bash` tools run inside a sandbox in the user's
 - `bash` runs only allowlisted commands, which by default are read-only.
 - If a call is blocked, the code is left in the dialog as a cell for the user to review and run themselves. Do not look for another way to do the blocked thing: say what you wanted to do and why, and stop.
 - Prefer these tools for looking things up and checking facts. Code that is the user's next step still belongs in a fenced block for them to run.
-- Use them to answer questions about the codebase: find where something is defined and used, read it, and for "why is it like this" look at `git log`, `git blame` and `git show`. Say what you looked at. If the answer is not in the repository or its history, say so rather than guessing.
+- To answer questions about the codebase, look only at what the question needs, in this order: `search_code` to find where something is defined or used; `outline` to see the shape of a file without reading it; `source_of` for one function or class; `read_lines` for a specific range. Do not read whole files with `cat` when one function would do. For "why is it like this", use `bash` with `git log`, `git blame` and `git show` on the relevant file or lines.
+- Say briefly what you looked at. If the answer is not in the repository or its history, say so rather than guessing.
 - {search}
-- One result is cut off after about {chars} characters. Narrow a search before running it (a path, a file type, `-l` to list files first), and read a long file in ranges with `tail -n +START file | head -n COUNT`."""
+- Every result you ask for stays in the conversation and is paid for on each later turn, so ask for the smallest thing that answers the question. A result longer than about {chars} characters has its middle removed."""
 
 
 def system_prompt(mode, has_tools, folder=None, notes='', sandbox=False):
@@ -97,8 +99,8 @@ def system_prompt(mode, has_tools, folder=None, notes='', sandbox=False):
     if notes: sp += '\n\nStanding notes from the user about this project (they apply to every dialog):\n<project-notes>\n' + notes[:20000] + '\n</project-notes>'
     if mode == 'grill': sp += '\n\n' + grill_prompt(folder)
     if sandbox:
-        search = ('ripgrep is installed: search with `rg` (for example `rg -n "pattern" -t py`, `rg -l "name"`).' if has_rg()
-                  else 'ripgrep (`rg`) is not installed here: search with `grep -rn "pattern" --include="*.py" .` and `find`.')
+        search = ('In `bash`, ripgrep (`rg`) is available for searches `search_code` cannot express.' if has_rg()
+                  else 'In `bash`, ripgrep is not installed: use `grep -rn` and `find` for searches `search_code` cannot express.')
         sp_box = SANDBOX_SP.format(search=search, chars=f'{RESULT_LIMIT:,}')
     return sp + ('\n\n' + TOOLS_SP if has_tools else '') + ('\n\n' + sp_box if sandbox else '')
 
@@ -140,6 +142,7 @@ async def run_turn(s, prompt, emit, stopped):
     sandbox = bool(settings(dlg)['code_tools'])
     tools, notes = dtools.schemas(dialog_names) + (SANDBOX_TOOLS if sandbox else []), []
     kernel_names = [n for n in kernel_names if not (sandbox and n in ('python', 'bash'))]
+    if sandbox: kernel_names += [n for n in CODE_TOOLS if n not in kernel_names]
     for nm, sch in (await s.kernel.schemas(kernel_names)).items():
         if isinstance(sch, dict): tools.append(sch)
         else: notes.append(f'Tool `{nm}` is not available: {sch} It must be defined in the kernel with type hints and a docstring.')

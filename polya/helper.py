@@ -9,7 +9,8 @@ import json, os, urllib.error, urllib.request
 from fastcore.funccall import call_func
 
 DIALOG_TOOLS = ['add_msg', 'update_msg', 'del_msg', 'read_msg', 'find_msgs', 'view_dlg', 'run_msg', 'msg_str_replace', 'list_dialogs', 'add_source']
-__all__ = DIALOG_TOOLS + ['tool_info', 'source_of', 'sandbox_dirs', 'sandbox_cmds', 'sandbox_allow']
+CODE_TOOLS = ['search_code', 'outline', 'read_lines', 'source_of']   # focused, read-only ways to look at the codebase
+__all__ = DIALOG_TOOLS + CODE_TOOLS + ['tool_info', 'sandbox_dirs', 'sandbox_cmds', 'sandbox_allow']
 
 
 def _api(name, **args):
@@ -33,7 +34,16 @@ async def _call_tool(name, args):
     from IPython import get_ipython
     res = call_func(name, args, ns=get_ipython().user_ns)
     if inspect.isawaitable(res): res = await res
-    return res if isinstance(res, str) else repr(res)
+    return _clip(res if isinstance(res, str) else repr(res))
+
+
+def _clip(text, limit=None):
+    "Keep an over-long result to the limit by dropping the middle: the start and the end are usually the useful parts."
+    limit = limit or int(os.environ.get('POLYA_TOOL_CHARS', 20000))
+    if len(text) <= limit: return text
+    head, tail = int(limit * 0.6), int(limit * 0.35)
+    return (f'{text[:head]}\n\n[… {len(text) - head - tail:,} characters left out of the middle of this result. '
+            f'It was {len(text):,} characters; ask for less: a narrower search, one function, or a range of lines …]\n\n{text[-tail:]}')
 
 
 def add_msg(
@@ -262,8 +272,7 @@ async def _sandbox_run(kind, code):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf): res = await _sbx['py'](code)
             text = buf.getvalue() + ('' if res is None else repr(res))
-        text = text.strip() or '(no output)'
-        return dict(result=text if len(text) <= lim else text[:lim] + f'… [truncated, {len(text) - lim} more chars]')
+        return dict(result=_clip(text.strip() or '(no output)', lim))
     except PermissionError as e: return dict(blocked=str(e).split('\nCall chain')[0][:400])
     except asyncio.TimeoutError: return dict(error='Timed out after 300 seconds.')
     except Exception as e:
@@ -352,3 +361,112 @@ def _run_in_module(module, qualname, code):
     where = f"{module}.{'.'.join(owner) + '.' if owner else ''}"
     return f"{', '.join(where + n for n in defs)} now runs this version, here and for every caller in the package. Memory only: the file is unchanged." + \
            (' Note: ' + '; '.join(notes) + '.' if notes else '')
+
+
+# ---------------------------------------------------------------- focused ways to read the codebase
+# These exist so that looking something up returns the part that answers the question, not a whole file.
+_SKIP_DIRS = {'.git', '.hg', '.venv', 'venv', 'env', 'node_modules', '__pycache__', '.tox', '.mypy_cache', '.pytest_cache', 'build', 'dist', '.eggs'}
+
+
+def search_code(
+    pattern: str,           # Regular expression to look for (ripgrep / Python syntax)
+    path: str = '.',        # File or folder to search, relative to the project folder
+    glob: str = '*.py',     # Only files whose name matches this, e.g. `*.py`, `*.{py,toml}`, `*` for all
+    max_results: int = 40,  # Most matching lines to return; the rest are counted, not shown
+) -> str:  # `file:line: text` for each match shown, then how many matches and files there were in all
+    "Search the codebase. Returns matching lines with their location, capped at `max_results`, with the totals, so start broad and narrow down."
+    import re, shutil, subprocess
+    max_results = max(1, min(int(max_results), 200))
+    shown, total, files, more = [], 0, set(), False
+
+    def take(file, line, text):
+        nonlocal total
+        total += 1
+        files.add(file)
+        if len(shown) < max_results: shown.append(f'{file}:{line}: {text.strip()[:200]}')
+    rg = shutil.which('rg')
+    if rg:
+        cmd = [rg, '-n', '--no-heading', '--color', 'never', '--max-columns', '300', '-g', glob, '-e', pattern, '--', path]
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, errors='replace')
+        for ln in p.stdout:
+            parts = ln.rstrip('\n').split(':', 2)
+            if len(parts) == 3 and parts[1].isdigit(): take(parts[0].removeprefix('./'), parts[1], parts[2])
+            if total >= 5000:
+                more = True
+                p.kill()
+                break
+        err = p.stderr.read() if not more else ''
+        p.wait()
+        if p.returncode == 2 and not total: return 'Search failed: ' + err.strip()[:300]
+    else:
+        import fnmatch
+        try: rx = re.compile(pattern)
+        except re.error as e: return f'Search failed: not a valid regular expression ({e})'
+        pats = [g.strip() for g in re.sub(r'^\*\.\{(.*)\}$', lambda m: ','.join('*.' + x for x in m.group(1).split(',')), glob).split(',')]
+        targets = [path] if os.path.isfile(path) else (os.path.join(dp, f) for dp, dns, fns in os.walk(path) for f in fns
+                                                         if not dns.__setitem__(slice(None), [d for d in dns if d not in _SKIP_DIRS]) and any(fnmatch.fnmatch(f, g) for g in pats))
+        for fp in targets:
+            try:
+                if os.path.getsize(fp) > 2_000_000: continue
+                with open(fp, encoding='utf8', errors='replace') as fh:
+                    for i, ln in enumerate(fh, 1):
+                        if rx.search(ln): take(os.path.relpath(fp), i, ln)
+            except OSError: continue
+            if total >= 5000:
+                more = True
+                break
+    if not total: return f'No matches for {pattern!r} in {path} ({glob}).'
+    head = f"{'More than ' if more else ''}{total} match{'es' if total != 1 else ''} in {len(files)} file{'s' if len(files) != 1 else ''}"
+    if total > len(shown): head += f'; showing the first {len(shown)}. Narrow the pattern or the path to see the rest'
+    return head + '.\n' + '\n'.join(shown)
+
+
+def outline(
+    file: str,  # A Python file, relative to the project folder
+) -> str:  # One line per class, function and method: its line range, signature and the first line of its docstring
+    "The shape of a Python file without its code. Read this before reading the file: it tells you which lines are worth asking for."
+    import ast
+    try:
+        with open(file, encoding='utf8') as fh: text = fh.read()
+        tree = ast.parse(text)
+    except OSError as e: return f'Cannot read {file}: {e}'
+    except SyntaxError as e: return f'{file} does not parse as Python: {e}'
+    out = []
+    doc = ast.get_docstring(tree)
+    if doc: out.append('"' + doc.strip().splitlines()[0][:160] + '"')
+    imports = sum(isinstance(n, (ast.Import, ast.ImportFrom)) for n in tree.body)
+
+    def walk(body, depth):
+        for n in body:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                start = min([n.lineno] + [d.lineno for d in n.decorator_list])
+                if isinstance(n, ast.ClassDef):
+                    bases = ', '.join(ast.unparse(b) for b in n.bases)
+                    sig = f"class {n.name}{'(' + bases + ')' if bases else ''}"
+                else:
+                    sig = f"{'async ' if isinstance(n, ast.AsyncFunctionDef) else ''}def {n.name}({ast.unparse(n.args)})" + (f' -> {ast.unparse(n.returns)}' if n.returns else '')
+                d = ast.get_docstring(n)
+                out.append(f"{start:>5}-{n.end_lineno:<5} {'    ' * depth}{sig[:150]}" + (f'  # {d.strip().splitlines()[0][:100]}' if d else ''))
+                if isinstance(n, ast.ClassDef): walk(n.body, depth + 1)
+            elif depth == 0 and isinstance(n, (ast.Assign, ast.AnnAssign)):
+                names = [ast.unparse(t) for t in (n.targets if isinstance(n, ast.Assign) else [n.target])]
+                if all(x.isupper() or x.isidentifier() for x in names) and len(out) < 400:
+                    out.append(f"{n.lineno:>5}{'':<6} {', '.join(names)[:80]} = …")
+    walk(tree.body, 0)
+    return f'{file}: {len(text.splitlines())} lines, {imports} import statements\n' + ('\n'.join(out) or '(no classes or functions)')
+
+
+def read_lines(
+    file: str,        # A text file, relative to the project folder
+    start: int = 1,   # First line to return (1-based)
+    count: int = 80,  # How many lines to return, at most 400
+) -> str:  # The lines, numbered, with a note of how long the file is
+    "Read part of a file. Use `outline` or `search_code` first to find the lines you need, rather than reading from the top."
+    try:
+        with open(file, encoding='utf8', errors='replace') as fh: lines = fh.read().splitlines()
+    except OSError as e: return f'Cannot read {file}: {e}'
+    start, count = max(1, int(start)), max(1, min(int(count), 400))
+    part = lines[start - 1:start - 1 + count]
+    if not part: return f'{file} has {len(lines)} lines; nothing at line {start}.'
+    end = start + len(part) - 1
+    return f'{file} lines {start}-{end} of {len(lines)}\n' + '\n'.join(f'{i:>5}  {ln}' for i, ln in enumerate(part, start))
